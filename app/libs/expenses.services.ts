@@ -143,25 +143,42 @@ export class ExpensesService {
   }
 
   /**
-   * Get weekly expenses (last 7 days)
+   * Get weekly expenses (current week: Sunday to Saturday)
    */
   static async getWeeklyExpenses(categoryId: number): Promise<Expense[]> {
-    const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .split('T')[0];
+    const today = new Date();
+    
+    // Get the start of the current week (Sunday)
+    const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - dayOfWeek);
+    startOfWeek.setHours(0, 0, 0, 0);
+    
+    // Get the end of the current week (Saturday)
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+    
+    const startDate = startOfWeek.toISOString().split('T')[0];
+    const endDate = endOfWeek.toISOString().split('T')[0];
 
     return this.getExpensesByDateRange(categoryId, startDate, endDate);
   }
 
   /**
-   * Get monthly expenses (last 30 days)
+   * Get monthly expenses (current calendar month)
    */
   static async getMonthlyExpenses(categoryId: number): Promise<Expense[]> {
-    const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .split('T')[0];
+    const today = new Date();
+    
+    // Get the start of the current month
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    
+    // Get the end of the current month
+    const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    
+    const startDate = startOfMonth.toISOString().split('T')[0];
+    const endDate = endOfMonth.toISOString().split('T')[0];
 
     return this.getExpensesByDateRange(categoryId, startDate, endDate);
   }
@@ -356,20 +373,68 @@ export const ExpenseUtils = {
   },
 
   /**
-   * Check if expense is from this week
+   * Check if expense is from current week (Sunday to Saturday)
    */
   isThisWeek: (expenseDate: string): boolean => {
     const expense = new Date(expenseDate);
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    return expense >= weekAgo;
+    const today = new Date();
+    
+    // Get the start of the current week (Sunday)
+    const dayOfWeek = today.getDay();
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - dayOfWeek);
+    startOfWeek.setHours(0, 0, 0, 0);
+    
+    // Get the end of the current week (Saturday)
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+    
+    return expense >= startOfWeek && expense <= endOfWeek;
   },
 
   /**
-   * Check if expense is from this month
+   * Check if expense is from current calendar month
    */
   isThisMonth: (expenseDate: string): boolean => {
     const expense = new Date(expenseDate);
-    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    return expense >= monthAgo;
+    const today = new Date();
+    
+    return expense.getFullYear() === today.getFullYear() && 
+           expense.getMonth() === today.getMonth();
+  },
+
+  /**
+   * Get the start and end of current week (Sunday to Saturday)
+   */
+  getCurrentWeekRange: (): { startDate: string; endDate: string } => {
+    const today = new Date();
+    const dayOfWeek = today.getDay();
+    
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - dayOfWeek);
+    
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    
+    return {
+      startDate: startOfWeek.toISOString().split('T')[0],
+      endDate: endOfWeek.toISOString().split('T')[0]
+    };
+  },
+
+  /**
+   * Get the start and end of current month
+   */
+  getCurrentMonthRange: (): { startDate: string; endDate: string } => {
+    const today = new Date();
+    
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    
+    return {
+      startDate: startOfMonth.toISOString().split('T')[0],
+      endDate: endOfMonth.toISOString().split('T')[0]
+    };
   }
 };

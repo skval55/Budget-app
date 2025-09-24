@@ -14,6 +14,9 @@ export default function Index() {
   const [categoryToDelete, setCategoryToDelete] = useState(null);
   const [showDeleteExpenseConfirm, setShowDeleteExpenseConfirm] = useState(false);
   const [expenseToDelete, setExpenseToDelete] = useState(null);
+  const [showWeeklyExpenses, setShowWeeklyExpenses] = useState(false);
+  const [showMonthlyExpenses, setShowMonthlyExpenses] = useState(false);
+  const [selectedCategoryForExpenses, setSelectedCategoryForExpenses] = useState(null);
 
   const addCategory = async (newCategory) => {
     try {
@@ -101,11 +104,22 @@ export default function Index() {
   };
 
   const getWeeklySpent = (categoryExpenses) => {
-    const oneWeekAgo = new Date();
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    // Use calendar-based week calculation (Sunday to Saturday)
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0 = Sunday
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - dayOfWeek);
+    startOfWeek.setHours(0, 0, 0, 0);
+    
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
     
     return categoryExpenses
-      .filter(expense => new Date(expense.expense_date) >= oneWeekAgo)
+      .filter(expense => {
+        const expenseDate = new Date(expense.expense_date);
+        return expenseDate >= startOfWeek && expenseDate <= endOfWeek;
+      })
       .reduce((total, expense) => total + expense.amount, 0);
   };
 
@@ -145,6 +159,41 @@ export default function Index() {
                expenseDate.getMonth() === currentMonth;
       })
       .reduce((total, expense) => total + expense.amount, 0);
+  };
+
+  // Get all expenses for current week
+  const getCurrentWeekExpenses = (categoryExpenses) => {
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0 = Sunday
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - dayOfWeek);
+    startOfWeek.setHours(0, 0, 0, 0);
+    
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+    
+    return categoryExpenses
+      .filter(expense => {
+        const expenseDate = new Date(expense.expense_date);
+        return expenseDate >= startOfWeek && expenseDate <= endOfWeek;
+      })
+      .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date)); // Most recent first
+  };
+
+  // Get all expenses for current month
+  const getCurrentMonthExpenses = (categoryExpenses) => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    
+    return categoryExpenses
+      .filter(expense => {
+        const expenseDate = new Date(expense.expense_date);
+        return expenseDate.getFullYear() === currentYear && 
+               expenseDate.getMonth() === currentMonth;
+      })
+      .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date)); // Most recent first
   };
 
   // Load data when component mounts
@@ -231,7 +280,16 @@ export default function Index() {
                 {/* Compact Budget Overview */}
                 <div className="flex flex-row gap-3 mb-3">
                   {/* Weekly Budget */}
-                  <div className="flex-1">
+                  <div 
+                    className="flex-1 cursor-pointer hover:bg-blue-50 rounded-md p-1 transition-colors"
+                    onClick={() => {
+                      if (categoryExpenses.length > 0) {
+                        setSelectedCategoryForExpenses(category);
+                        setShowWeeklyExpenses(true);
+                      }
+                    }}
+                    title={categoryExpenses.length > 0 ? "Click to view weekly expenses" : "No expenses to show"}
+                  >
                     <div className="flex justify-between items-center text-xs text-gray-600 mb-1">
                       <span>Weekly</span>
                       <span className="font-bold">${weeklySpent.toFixed(0)} / ${category.weekly_budget.toFixed(0)}</span>
@@ -245,7 +303,16 @@ export default function Index() {
                   </div>
 
                   {/* Monthly Budget */}
-                  <div className="flex-1">
+                  <div 
+                    className="flex-1 cursor-pointer hover:bg-purple-50 rounded-md p-1 transition-colors"
+                    onClick={() => {
+                      if (categoryExpenses.length > 0) {
+                        setSelectedCategoryForExpenses(category);
+                        setShowMonthlyExpenses(true);
+                      }
+                    }}
+                    title={categoryExpenses.length > 0 ? "Click to view monthly expenses" : "No expenses to show"}
+                  >
                     <div className="flex justify-between items-center text-xs text-gray-600 mb-1">
                       <span>Monthly</span>
                       <span className="font-bold">${monthlySpent.toFixed(0)} / ${monthlyBudget.toFixed(0)}</span>
@@ -261,7 +328,10 @@ export default function Index() {
 
                 {/* Recent Expenses - More Compact */}
                 <div className="space-y-1">
-                  {categoryExpenses.slice(-2).map((expense) => (
+                  {categoryExpenses
+                    .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date))
+                    .slice(0, 2)
+                    .map((expense) => (
                     <div key={expense.id} className="flex justify-between items-center text-xs group bg-gray-50 rounded p-2">
                       <div className="flex-1 min-w-0 pr-2">
                         <span className="text-gray-700 truncate block font-medium">{expense.description}</span>
@@ -346,6 +416,32 @@ export default function Index() {
             onCancel={() => {
               setShowDeleteExpenseConfirm(false);
               setExpenseToDelete(null);
+            }}
+          />
+        )}
+
+        {/* Weekly Expenses Modal */}
+        {showWeeklyExpenses && selectedCategoryForExpenses && (
+          <WeeklyExpensesModal
+            category={selectedCategoryForExpenses}
+            expenses={getCurrentWeekExpenses(getCategoryExpenses(selectedCategoryForExpenses.id))}
+            onDeleteExpense={handleDeleteExpenseClick}
+            onClose={() => {
+              setShowWeeklyExpenses(false);
+              setSelectedCategoryForExpenses(null);
+            }}
+          />
+        )}
+
+        {/* Monthly Expenses Modal */}
+        {showMonthlyExpenses && selectedCategoryForExpenses && (
+          <MonthlyExpensesModal
+            category={selectedCategoryForExpenses}
+            expenses={getCurrentMonthExpenses(getCategoryExpenses(selectedCategoryForExpenses.id))}
+            onDeleteExpense={handleDeleteExpenseClick}
+            onClose={() => {
+              setShowMonthlyExpenses(false);
+              setSelectedCategoryForExpenses(null);
             }}
           />
         )}
@@ -574,6 +670,161 @@ function ExpenseForm({ categoryId, onSubmit, onCancel }) {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function WeeklyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
+  const getTotalAmount = () => {
+    return expenses.reduce((total, expense) => total + expense.amount, 0);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg sm:text-xl font-semibold text-blue-600">
+            Weekly Expenses - {category.name}
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+        
+        <div className="mb-4 p-3 bg-blue-50 rounded-lg">
+          <div className="flex justify-between items-center">
+            <span className="text-blue-700 font-medium">Total Weekly Spending:</span>
+            <span className="text-blue-900 font-bold text-lg">${getTotalAmount().toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between items-center mt-1">
+            <span className="text-blue-600 text-sm">Weekly Budget:</span>
+            <span className="text-blue-800 font-semibold">${category.weekly_budget.toFixed(2)}</span>
+          </div>
+        </div>
+
+        <div className="space-y-2 max-h-96 overflow-y-auto">
+          {expenses.length === 0 ? (
+            <p className="text-gray-500 text-center py-8">No expenses this week</p>
+          ) : (
+            expenses.map((expense) => (
+              <div key={expense.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                <div className="flex-1 min-w-0 pr-3">
+                  <p className="font-medium text-gray-900 truncate">{expense.description}</p>
+                  <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-lg font-semibold text-gray-900">${expense.amount.toFixed(2)}</span>
+                  <button
+                    onClick={() => onDeleteExpense(category.id, expense)}
+                    className="text-red-500 hover:text-red-700 transition-colors"
+                    title="Delete expense"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            onClick={onClose}
+            className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MonthlyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
+  const getTotalAmount = () => {
+    return expenses.reduce((total, expense) => total + expense.amount, 0);
+  };
+
+  // Calculate monthly budget
+  const getMonthlyBudget = () => {
+    const dailyBudget = category.weekly_budget / 7;
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    return dailyBudget * daysInMonth;
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg sm:text-xl font-semibold text-purple-600">
+            Monthly Expenses - {category.name}
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+        
+        <div className="mb-4 p-3 bg-purple-50 rounded-lg">
+          <div className="flex justify-between items-center">
+            <span className="text-purple-700 font-medium">Total Monthly Spending:</span>
+            <span className="text-purple-900 font-bold text-lg">${getTotalAmount().toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between items-center mt-1">
+            <span className="text-purple-600 text-sm">Monthly Budget:</span>
+            <span className="text-purple-800 font-semibold">${getMonthlyBudget().toFixed(2)}</span>
+          </div>
+        </div>
+
+        <div className="space-y-2 max-h-96 overflow-y-auto">
+          {expenses.length === 0 ? (
+            <p className="text-gray-500 text-center py-8">No expenses this month</p>
+          ) : (
+            expenses.map((expense) => (
+              <div key={expense.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                <div className="flex-1 min-w-0 pr-3">
+                  <p className="font-medium text-gray-900 truncate">{expense.description}</p>
+                  <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-lg font-semibold text-gray-900">${expense.amount.toFixed(2)}</span>
+                  <button
+                    onClick={() => onDeleteExpense(category.id, expense)}
+                    className="text-red-500 hover:text-red-700 transition-colors"
+                    title="Delete expense"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            onClick={onClose}
+            className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );
