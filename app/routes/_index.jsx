@@ -460,7 +460,7 @@ export default function Index() {
 
 function DeleteExpenseConfirmModal({ expense, onConfirm, onCancel }) {
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-[60]">
       <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg sm:text-xl font-semibold mb-4 text-red-600">Delete Expense</h2>
         <p className="text-gray-700 mb-2">
@@ -515,7 +515,7 @@ function CategoryForm({ onSubmit, onCancel }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg sm:text-xl font-semibold mb-4">Add New Category</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -567,7 +567,7 @@ function CategoryForm({ onSubmit, onCancel }) {
 }
 function DeleteConfirmModal({ category, onConfirm, onCancel }) {
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-[60]">
       <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg sm:text-xl font-semibold mb-4 text-red-600">Delete Category</h2>
         <p className="text-gray-700 mb-2">
@@ -613,7 +613,7 @@ function ExpenseForm({ categoryId, onSubmit, onCancel }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg sm:text-xl font-semibold mb-4">Add New Expense</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -681,7 +681,7 @@ function WeeklyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg sm:text-xl font-semibold text-blue-600">
@@ -764,7 +764,7 @@ function MonthlyExpensesModal({ category, expenses, onDeleteExpense, onClose }) 
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg sm:text-xl font-semibold text-purple-600">
