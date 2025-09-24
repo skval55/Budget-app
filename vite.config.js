@@ -3,7 +3,12 @@ import { defineConfig } from "vite";
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [remix(), tailwindcss()],
+  plugins: [
+    remix({
+      ssr: false, // Disable server-side rendering for static deployment
+    }), 
+    tailwindcss()
+  ],
   server: {
     port: 3000,
   },
