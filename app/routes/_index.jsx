@@ -17,6 +17,8 @@ export default function Index() {
   const [showWeeklyExpenses, setShowWeeklyExpenses] = useState(false);
   const [showMonthlyExpenses, setShowMonthlyExpenses] = useState(false);
   const [selectedCategoryForExpenses, setSelectedCategoryForExpenses] = useState(null);
+  const [showMonthlyReport, setShowMonthlyReport] = useState(false);
+  const [selectedReportMonth, setSelectedReportMonth] = useState('');
 
   const addCategory = async (newCategory) => {
     try {
@@ -196,6 +198,57 @@ export default function Index() {
       .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date)); // Most recent first
   };
 
+  // Get expenses for a specific month/year
+  const getExpensesForMonth = (categoryExpenses, year, month) => {
+    return categoryExpenses
+      .filter(expense => {
+        const expenseDate = new Date(expense.expense_date);
+        return expenseDate.getFullYear() === year && 
+               expenseDate.getMonth() === month;
+      })
+      .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
+  };
+
+  // Generate list of available months (last 12 months)
+  const getAvailableMonths = () => {
+    const months = [];
+    const now = new Date();
+    
+    for (let i = 1; i <= 12; i++) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const year = date.getFullYear();
+      const month = date.getMonth();
+      const monthName = date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      
+      months.push({
+        value: `${year}-${month}`,
+        label: monthName,
+        year: year,
+        month: month
+      });
+    }
+    
+    return months;
+  };
+
+  // Generate monthly report data
+  const generateMonthlyReport = (year, month) => {
+    const reportData = categories.map(category => {
+      const categoryExpenses = getCategoryExpenses(category.id);
+      const monthExpenses = getExpensesForMonth(categoryExpenses, year, month);
+      const totalSpent = monthExpenses.reduce((total, expense) => total + expense.amount, 0);
+      
+      return {
+        category,
+        expenses: monthExpenses,
+        totalSpent,
+        expenseCount: monthExpenses.length
+      };
+    }).filter(item => item.expenseCount > 0); // Only include categories with expenses
+    
+    return reportData;
+  };
+
   // Load data when component mounts
   useEffect(() => {
     const loadData = async () => {
@@ -224,7 +277,36 @@ export default function Index() {
       <div className="max-w-6xl mx-auto">
         <header className="mb-6 sm:mb-8">
           <h1 className="text-center text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 mb-4">Budget Tracker</h1>
-         
+          
+          {/* Monthly Report Button */}
+          <div className="flex justify-center">
+            <div className="flex items-center gap-3 bg-white rounded-lg shadow-md p-3">
+              <label className="text-sm font-medium text-gray-700">Monthly Report:</label>
+              <select
+                value={selectedReportMonth}
+                onChange={(e) => setSelectedReportMonth(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              >
+                <option value="">Select a month...</option>
+                {getAvailableMonths().map((month) => (
+                  <option key={month.value} value={month.value}>
+                    {month.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  if (selectedReportMonth) {
+                    setShowMonthlyReport(true);
+                  }
+                }}
+                disabled={!selectedReportMonth}
+                className="bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors"
+              >
+                Generate Report
+              </button>
+            </div>
+          </div>
         </header>
 
         {/* Loading State */}
@@ -445,6 +527,21 @@ export default function Index() {
             }}
           />
         )}
+        {/* Monthly Report Modal */}
+        {showMonthlyReport && selectedReportMonth && (
+          <MonthlyReportModal
+            selectedMonth={selectedReportMonth}
+            reportData={(() => {
+              const [year, month] = selectedReportMonth.split('-').map(Number);
+              return generateMonthlyReport(year, month);
+            })()}
+            onClose={() => {
+              setShowMonthlyReport(false);
+              setSelectedReportMonth('');
+            }}
+          />
+        )}
+
         {/* Add New Category Button */}
          <button
             onClick={() => setShowCategoryForm(true)}
@@ -811,6 +908,102 @@ function MonthlyExpensesModal({ category, expenses, onDeleteExpense, onClose }) 
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            onClick={onClose}
+            className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MonthlyReportModal({ selectedMonth, reportData, onClose }) {
+  const [year, month] = selectedMonth.split('-').map(Number);
+  const monthName = new Date(year, month, 1).toLocaleDateString('en-US', { 
+    month: 'long', 
+    year: 'numeric' 
+  });
+
+  const getTotalSpent = () => {
+    return reportData.reduce((total, item) => total + item.totalSpent, 0);
+  };
+
+  const getTotalExpenses = () => {
+    return reportData.reduce((total, item) => total + item.expenseCount, 0);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-xl sm:text-2xl font-bold text-green-600">
+            Monthly Report - {monthName}
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+        
+        {/* Summary Section */}
+        <div className="mb-6 p-4 bg-green-50 rounded-lg">
+          <div className="grid grid-cols-3 gap-4">
+            <div className="text-center">
+              <p className="text-green-700 font-medium">Spent</p>
+              <p className="text-green-900 font-bold text-2xl">${getTotalSpent().toFixed(2)}</p>
+            </div>
+            <div className="text-center">
+              <p className="text-green-700 font-medium">Expenses</p>
+              <p className="text-green-900 font-bold text-2xl">{getTotalExpenses()}</p>
+            </div>
+            <div className="text-center">
+              <p className="text-green-700 font-medium">Categories</p>
+              <p className="text-green-900 font-bold text-2xl">{reportData.length}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Categories Report */}
+        <div className="space-y-4 max-h-128 overflow-y-auto">
+          {reportData.length === 0 ? (
+            <div className="text-center py-8">
+              <p className="text-gray-500 text-lg">No expenses found for {monthName}</p>
+            </div>
+          ) : (
+            reportData.map((item) => (
+              <div key={item.category.id} className="bg-gray-50 rounded-lg p-4">
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="text-lg font-semibold text-gray-900">{item.category.name}</h3>
+                  <div className="text-right">
+                    <p className="text-lg font-bold text-gray-900">${item.totalSpent.toFixed(2)}</p>
+                    <p className="text-sm text-gray-600">{item.expenseCount} expense{item.expenseCount !== 1 ? 's' : ''}</p>
+                  </div>
+                </div>
+                
+                {/* Expenses List */}
+                <div className="space-y-2">
+                  {item.expenses.map((expense) => (
+                    <div key={expense.id} className="flex justify-between items-center p-2 bg-white rounded border">
+                      <div className="flex-1 min-w-0 pr-3">
+                        <p className="font-medium text-gray-900 truncate">{expense.description}</p>
+                        <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
+                      </div>
+                      <span className="font-semibold text-gray-900">${expense.amount.toFixed(2)}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))
