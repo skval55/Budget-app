@@ -24,6 +24,10 @@ export default function Index() {
   const [showCategoryForm, setShowCategoryForm] = useState(false);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
+  const [showEditCategoryForm, setShowEditCategoryForm] = useState(false);
+  const [categoryToEdit, setCategoryToEdit] = useState(null);
+  const [showEditExpenseForm, setShowEditExpenseForm] = useState(false);
+  const [expenseToEdit, setExpenseToEdit] = useState(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [categoryToDelete, setCategoryToDelete] = useState(null);
   const [showDeleteExpenseConfirm, setShowDeleteExpenseConfirm] = useState(false);
@@ -39,6 +43,8 @@ export default function Index() {
   const [lastQuickDescription, setLastQuickDescription] = useState("");
   const [isSubmittingCategory, setIsSubmittingCategory] = useState(false);
   const [isSubmittingExpense, setIsSubmittingExpense] = useState(false);
+  const [isUpdatingCategory, setIsUpdatingCategory] = useState(false);
+  const [isUpdatingExpense, setIsUpdatingExpense] = useState(false);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
   const [isDeletingExpense, setIsDeletingExpense] = useState(false);
   const toastTimeoutsRef = useRef(new Map());
@@ -268,6 +274,73 @@ export default function Index() {
     setShowDeleteConfirm(true);
   };
 
+  const handleEditCategoryClick = (category) => {
+    setQuickAddOpenCategoryId(null);
+    setCategoryToEdit(category);
+    setShowEditCategoryForm(true);
+  };
+
+  const updateCategory = async (categoryId, updatedCategory) => {
+    if (isUpdatingCategory) return false;
+    setIsUpdatingCategory(true);
+
+    const originalCategory = categories.find((category) => category.id === categoryId);
+    const optimisticCategory = originalCategory
+      ? {
+          ...originalCategory,
+          name: updatedCategory.name,
+          weekly_budget: updatedCategory.weekly_budget,
+        }
+      : null;
+
+    if (optimisticCategory) {
+      setCategories((prevCategories) =>
+        prevCategories.map((category) =>
+          category.id === categoryId ? optimisticCategory : category
+        )
+      );
+      setSelectedCategoryForExpenses((currentCategory) =>
+        currentCategory?.id === categoryId ? optimisticCategory : currentCategory
+      );
+    }
+
+    try {
+      const savedCategory = await CategoriesService.updateCategory(categoryId, {
+        name: updatedCategory.name,
+        weekly_budget: updatedCategory.weekly_budget,
+      });
+
+      setCategories((prevCategories) =>
+        prevCategories.map((category) =>
+          category.id === categoryId ? savedCategory : category
+        )
+      );
+      setSelectedCategoryForExpenses((currentCategory) =>
+        currentCategory?.id === categoryId ? savedCategory : currentCategory
+      );
+      setCategoryToEdit(null);
+      setShowEditCategoryForm(false);
+      showToast(`Updated ${savedCategory.name}`, "success");
+      return true;
+    } catch (error) {
+      if (originalCategory) {
+        setCategories((prevCategories) =>
+          prevCategories.map((category) =>
+            category.id === categoryId ? originalCategory : category
+          )
+        );
+        setSelectedCategoryForExpenses((currentCategory) =>
+          currentCategory?.id === categoryId ? originalCategory : currentCategory
+        );
+      }
+      console.error("Failed to update category:", error);
+      showToast(`Failed to update category: ${getErrorMessage(error)}`, "error");
+      return false;
+    } finally {
+      setIsUpdatingCategory(false);
+    }
+  };
+
   const deleteExpense = async (_categoryId, expenseId) => {
     if (isDeletingExpense) return;
     setIsDeletingExpense(true);
@@ -290,6 +363,65 @@ export default function Index() {
   const handleDeleteExpenseClick = (categoryId, expense) => {
     setExpenseToDelete({ categoryId, expense });
     setShowDeleteExpenseConfirm(true);
+  };
+
+  const handleEditExpenseClick = (expense) => {
+    setExpenseToEdit(expense);
+    setShowEditExpenseForm(true);
+  };
+
+  const updateExpense = async (expenseId, updatedExpense) => {
+    if (isUpdatingExpense) return false;
+    setIsUpdatingExpense(true);
+
+    const originalExpense = expenses.find((expense) => expense.id === expenseId);
+    const optimisticExpense = originalExpense
+      ? {
+          ...originalExpense,
+          description: updatedExpense.description,
+          amount: updatedExpense.amount,
+          expense_date: updatedExpense.date,
+        }
+      : null;
+
+    if (optimisticExpense) {
+      setExpenses((prevExpenses) =>
+        prevExpenses.map((expense) =>
+          expense.id === expenseId ? optimisticExpense : expense
+        )
+      );
+    }
+
+    try {
+      const savedExpense = await ExpensesService.updateExpense(expenseId, {
+        description: updatedExpense.description,
+        amount: updatedExpense.amount,
+        expense_date: updatedExpense.date,
+      });
+
+      setExpenses((prevExpenses) =>
+        prevExpenses.map((expense) =>
+          expense.id === expenseId ? savedExpense : expense
+        )
+      );
+      setExpenseToEdit(null);
+      setShowEditExpenseForm(false);
+      showToast("Expense updated", "success");
+      return true;
+    } catch (error) {
+      if (originalExpense) {
+        setExpenses((prevExpenses) =>
+          prevExpenses.map((expense) =>
+            expense.id === expenseId ? originalExpense : expense
+          )
+        );
+      }
+      console.error("Failed to update expense:", error);
+      showToast(`Failed to update expense: ${getErrorMessage(error)}`, "error");
+      return false;
+    } finally {
+      setIsUpdatingExpense(false);
+    }
   };
 
   // Helper function to get expenses for a category
@@ -555,6 +687,16 @@ export default function Index() {
                       </svg>
                     </button>
                     <button
+                      onClick={() => handleEditCategoryClick(category)}
+                      className="text-amber-600 hover:text-amber-700 w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+                      title="Edit category"
+                      aria-label="Edit category"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2.5 2.5 0 113.536 3.536L12.536 14.536a2 2 0 01-.879.513l-3.244.811a.5.5 0 01-.606-.606l.811-3.244A2 2 0 019 11z" />
+                      </svg>
+                    </button>
+                    <button
                       onClick={() => handleDeleteClick(category)}
                       className="text-red-500 hover:text-red-700 w-8 h-8 rounded-full flex items-center justify-center transition-colors"
                       title="Delete category"
@@ -628,6 +770,16 @@ export default function Index() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-gray-900 font-semibold">{formatCurrency(expense.amount)}</span>
+                        <button
+                          onClick={() => handleEditExpenseClick(expense)}
+                          className="opacity-100 text-amber-600 hover:text-amber-700 transition-opacity"
+                          title="Edit expense"
+                          aria-label="Edit expense"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2.5 2.5 0 113.536 3.536L12.536 14.536a2 2 0 01-.879.513l-3.244.811a.5.5 0 01-.606-.606l.811-3.244A2 2 0 019 11z" />
+                          </svg>
+                        </button>
                         <button
                           onClick={() => handleDeleteExpenseClick(category.id, expense)}
                           className="opacity-100 text-red-500 hover:text-red-700 transition-opacity"
@@ -760,11 +912,44 @@ export default function Index() {
           />
         )}
 
+        {/* Edit Category Modal */}
+        {showEditCategoryForm && categoryToEdit && (
+          <EditCategoryForm
+            category={categoryToEdit}
+            onSubmit={(updatedCategory) =>
+              updateCategory(categoryToEdit.id, updatedCategory)
+            }
+            onCancel={() => {
+              if (isUpdatingCategory) return;
+              setShowEditCategoryForm(false);
+              setCategoryToEdit(null);
+            }}
+            isSubmitting={isUpdatingCategory}
+          />
+        )}
+
+        {/* Edit Expense Modal */}
+        {showEditExpenseForm && expenseToEdit && (
+          <EditExpenseForm
+            expense={expenseToEdit}
+            onSubmit={(updatedExpense) =>
+              updateExpense(expenseToEdit.id, updatedExpense)
+            }
+            onCancel={() => {
+              if (isUpdatingExpense) return;
+              setShowEditExpenseForm(false);
+              setExpenseToEdit(null);
+            }}
+            isSubmitting={isUpdatingExpense}
+          />
+        )}
+
         {/* Weekly Expenses Modal */}
         {showWeeklyExpenses && selectedCategoryForExpenses && (
           <WeeklyExpensesModal
             category={selectedCategoryForExpenses}
             expenses={getCurrentWeekExpenses(getCategoryExpenses(selectedCategoryForExpenses.id))}
+            onEditExpense={handleEditExpenseClick}
             onDeleteExpense={handleDeleteExpenseClick}
             onClose={() => {
               setShowWeeklyExpenses(false);
@@ -778,6 +963,7 @@ export default function Index() {
           <MonthlyExpensesModal
             category={selectedCategoryForExpenses}
             expenses={getCurrentMonthExpenses(getCategoryExpenses(selectedCategoryForExpenses.id))}
+            onEditExpense={handleEditExpenseClick}
             onDeleteExpense={handleDeleteExpenseClick}
             onClose={() => {
               setShowMonthlyExpenses(false);
@@ -1111,6 +1297,115 @@ function CategoryForm({ onSubmit, onCancel, isSubmitting }) {
   );
 }
 
+function EditCategoryForm({ category, onSubmit, onCancel, isSubmitting }) {
+  const [formData, setFormData] = useState({
+    name: category.name || "",
+    weeklyBudget: String(category.weekly_budget ?? ""),
+  });
+  const [errors, setErrors] = useState({});
+
+  const validate = () => {
+    const validationErrors = {};
+    const trimmedName = formData.name.trim();
+    const weeklyBudget = Number(formData.weeklyBudget);
+
+    if (!trimmedName) {
+      validationErrors.name = "Category name is required.";
+    } else if (trimmedName.length > 255) {
+      validationErrors.name = "Category name must be 255 characters or fewer.";
+    }
+
+    if (formData.weeklyBudget === "") {
+      validationErrors.weeklyBudget = "Weekly budget is required.";
+    } else if (!Number.isFinite(weeklyBudget) || weeklyBudget <= 0) {
+      validationErrors.weeklyBudget = "Weekly budget must be greater than 0.";
+    }
+
+    setErrors(validationErrors);
+    return Object.keys(validationErrors).length === 0;
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (!validate()) return;
+
+    onSubmit({
+      name: formData.name.trim(),
+      weekly_budget: Number(formData.weeklyBudget),
+    });
+  };
+
+  return (
+    <ModalFrame onClose={onCancel} titleId="edit-category-title">
+      <h2 id="edit-category-title" className="text-lg sm:text-xl font-semibold mb-4">
+        Edit Category
+      </h2>
+      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <div>
+          <label htmlFor="edit-category-name" className="block text-sm font-medium text-gray-700 mb-2">
+            Category Name
+          </label>
+          <input
+            id="edit-category-name"
+            type="text"
+            autoFocus
+            maxLength={255}
+            value={formData.name}
+            onChange={(event) => {
+              setFormData({ ...formData, name: event.target.value });
+              if (errors.name) setErrors({ ...errors, name: undefined });
+            }}
+            aria-invalid={Boolean(errors.name)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.name && <p className="mt-1 text-xs text-red-600">{errors.name}</p>}
+        </div>
+        <div>
+          <label htmlFor="edit-category-weekly-budget" className="block text-sm font-medium text-gray-700 mb-2">
+            Weekly Budget ($)
+          </label>
+          <input
+            id="edit-category-weekly-budget"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={formData.weeklyBudget}
+            onChange={(event) => {
+              setFormData({ ...formData, weeklyBudget: event.target.value });
+              if (errors.weeklyBudget) {
+                setErrors({ ...errors, weeklyBudget: undefined });
+              }
+            }}
+            aria-invalid={Boolean(errors.weeklyBudget)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.weeklyBudget && (
+            <p className="mt-1 text-xs text-red-600">{errors.weeklyBudget}</p>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3 pt-4">
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 disabled:bg-blue-300 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+          >
+            {isSubmitting ? "Saving..." : "Save Changes"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 disabled:bg-gray-200 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </ModalFrame>
+  );
+}
+
 function DeleteConfirmModal({ category, onConfirm, onCancel, isDeleting }) {
   return (
     <ModalFrame onClose={onCancel} titleId="delete-category-title" zIndex="z-[60]">
@@ -1276,7 +1571,138 @@ function ExpenseForm({ categoryId, onSubmit, onCancel, isSubmitting }) {
   );
 }
 
-function WeeklyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
+function EditExpenseForm({ expense, onSubmit, onCancel, isSubmitting }) {
+  const [formData, setFormData] = useState({
+    description: expense.description || "",
+    amount: String(expense.amount ?? ""),
+    date: expense.expense_date
+      ? String(expense.expense_date).slice(0, 10)
+      : new Date().toISOString().split("T")[0],
+  });
+  const [errors, setErrors] = useState({});
+
+  const validate = () => {
+    const validationErrors = {};
+    const trimmedDescription = formData.description.trim();
+    const amount = Number(formData.amount);
+
+    if (!trimmedDescription) {
+      validationErrors.description = "Description is required.";
+    } else if (trimmedDescription.length > 500) {
+      validationErrors.description = "Description must be 500 characters or fewer.";
+    }
+
+    if (formData.amount === "") {
+      validationErrors.amount = "Amount is required.";
+    } else if (!Number.isFinite(amount) || amount <= 0) {
+      validationErrors.amount = "Amount must be greater than 0.";
+    }
+
+    if (!formData.date) {
+      validationErrors.date = "Date is required.";
+    }
+
+    setErrors(validationErrors);
+    return Object.keys(validationErrors).length === 0;
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (!validate()) return;
+
+    onSubmit({
+      description: formData.description.trim(),
+      amount: Number(formData.amount),
+      date: formData.date,
+    });
+  };
+
+  return (
+    <ModalFrame onClose={onCancel} titleId="edit-expense-title">
+      <h2 id="edit-expense-title" className="text-lg sm:text-xl font-semibold mb-4">
+        Edit Expense
+      </h2>
+      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <div>
+          <label htmlFor="edit-expense-description" className="block text-sm font-medium text-gray-700 mb-2">
+            Description
+          </label>
+          <input
+            id="edit-expense-description"
+            type="text"
+            autoFocus
+            maxLength={500}
+            value={formData.description}
+            onChange={(event) => {
+              setFormData({ ...formData, description: event.target.value });
+              if (errors.description) setErrors({ ...errors, description: undefined });
+            }}
+            aria-invalid={Boolean(errors.description)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.description && (
+            <p className="mt-1 text-xs text-red-600">{errors.description}</p>
+          )}
+        </div>
+        <div>
+          <label htmlFor="edit-expense-amount" className="block text-sm font-medium text-gray-700 mb-2">
+            Amount ($)
+          </label>
+          <input
+            id="edit-expense-amount"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={formData.amount}
+            onChange={(event) => {
+              setFormData({ ...formData, amount: event.target.value });
+              if (errors.amount) setErrors({ ...errors, amount: undefined });
+            }}
+            aria-invalid={Boolean(errors.amount)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.amount && <p className="mt-1 text-xs text-red-600">{errors.amount}</p>}
+        </div>
+        <div>
+          <label htmlFor="edit-expense-date" className="block text-sm font-medium text-gray-700 mb-2">
+            Date
+          </label>
+          <input
+            id="edit-expense-date"
+            type="date"
+            value={formData.date}
+            onChange={(event) => {
+              setFormData({ ...formData, date: event.target.value });
+              if (errors.date) setErrors({ ...errors, date: undefined });
+            }}
+            aria-invalid={Boolean(errors.date)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.date && <p className="mt-1 text-xs text-red-600">{errors.date}</p>}
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3 pt-4">
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 disabled:bg-blue-300 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+          >
+            {isSubmitting ? "Saving..." : "Save Changes"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 disabled:bg-gray-200 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </ModalFrame>
+  );
+}
+
+function WeeklyExpensesModal({ category, expenses, onEditExpense, onDeleteExpense, onClose }) {
   const getTotalAmount = () => {
     return expenses.reduce((total, expense) => total + expense.amount, 0);
   };
@@ -1326,6 +1752,17 @@ function WeeklyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
                 <span className="text-lg font-semibold text-gray-900">{formatCurrency(expense.amount)}</span>
                 <button
                   type="button"
+                  onClick={() => onEditExpense(expense)}
+                  className="text-amber-600 hover:text-amber-700 transition-colors"
+                  title="Edit expense"
+                  aria-label="Edit expense"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2.5 2.5 0 113.536 3.536L12.536 14.536a2 2 0 01-.879.513l-3.244.811a.5.5 0 01-.606-.606l.811-3.244A2 2 0 019 11z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
                   onClick={() => onDeleteExpense(category.id, expense)}
                   className="text-red-500 hover:text-red-700 transition-colors"
                   title="Delete expense"
@@ -1354,7 +1791,7 @@ function WeeklyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
   );
 }
 
-function MonthlyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
+function MonthlyExpensesModal({ category, expenses, onEditExpense, onDeleteExpense, onClose }) {
   const getTotalAmount = () => {
     return expenses.reduce((total, expense) => total + expense.amount, 0);
   };
@@ -1412,6 +1849,17 @@ function MonthlyExpensesModal({ category, expenses, onDeleteExpense, onClose }) 
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-lg font-semibold text-gray-900">{formatCurrency(expense.amount)}</span>
+                <button
+                  type="button"
+                  onClick={() => onEditExpense(expense)}
+                  className="text-amber-600 hover:text-amber-700 transition-colors"
+                  title="Edit expense"
+                  aria-label="Edit expense"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2.5 2.5 0 113.536 3.536L12.536 14.536a2 2 0 01-.879.513l-3.244.811a.5.5 0 01-.606-.606l.811-3.244A2 2 0 019 11z" />
+                  </svg>
+                </button>
                 <button
                   type="button"
                   onClick={() => onDeleteExpense(category.id, expense)}
