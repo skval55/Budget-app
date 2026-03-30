@@ -15,6 +15,51 @@ const formatCurrency = (amount) =>
 const getErrorMessage = (error) =>
   error instanceof Error ? error.message : "Unexpected error";
 
+const getFriendlyErrorMessage = (error, entity) => {
+  const rawMessage = getErrorMessage(error);
+  const normalizedMessage = rawMessage.toLowerCase();
+
+  if (
+    normalizedMessage.includes("duplicate") ||
+    normalizedMessage.includes("already exists") ||
+    normalizedMessage.includes("unique") ||
+    normalizedMessage.includes("23505")
+  ) {
+    return "A category with this name already exists.";
+  }
+
+  if (
+    normalizedMessage.includes("check constraint") ||
+    normalizedMessage.includes("violates check constraint")
+  ) {
+    if (entity === "expense") {
+      return "Expense amount must be greater than 0.";
+    }
+    if (entity === "category") {
+      return "Weekly budget must be greater than 0.";
+    }
+  }
+
+  if (
+    normalizedMessage.includes("fetch failed") ||
+    normalizedMessage.includes("network")
+  ) {
+    return "Network connection issue. Please try again.";
+  }
+
+  return rawMessage;
+};
+
+const hasDuplicateCategoryName = (name, categories = [], excludeId = null) => {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return false;
+
+  return categories.some((category) => {
+    if (excludeId !== null && category.id === excludeId) return false;
+    return String(category.name || "").trim().toLowerCase() === normalized;
+  });
+};
+
 export default function Index() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -59,12 +104,22 @@ export default function Index() {
     setToasts((prevToasts) => prevToasts.filter((toast) => toast.id !== id));
   };
 
-  const showToast = (message, type = "success") => {
+  const showToast = (message, type = "success", options = {}) => {
+    const { duration = 3500, actionLabel, onAction } = options;
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setToasts((prevToasts) => [...prevToasts, { id, message, type }]);
+    setToasts((prevToasts) => [
+      ...prevToasts,
+      {
+        id,
+        message,
+        type,
+        actionLabel,
+        onAction,
+      },
+    ]);
     const timeoutId = setTimeout(() => {
       dismissToast(id);
-    }, 3500);
+    }, duration);
     toastTimeoutsRef.current.set(id, timeoutId);
   };
 
@@ -152,7 +207,10 @@ export default function Index() {
       showToast(`Added ${createdCategory.name}`, "success");
     } catch (error) {
       console.error('Failed to add category:', error);
-      showToast(`Failed to create category: ${getErrorMessage(error)}`, "error");
+      showToast(
+        `Failed to create category: ${getFriendlyErrorMessage(error, "category")}`,
+        "error"
+      );
     } finally {
       setIsSubmittingCategory(false);
     }
@@ -180,7 +238,10 @@ export default function Index() {
       return true;
     } catch (error) {
       console.error('Failed to add expense:', error);
-      showToast(`Failed to create expense: ${getErrorMessage(error)}`, "error");
+      showToast(
+        `Failed to create expense: ${getFriendlyErrorMessage(error, "expense")}`,
+        "error"
+      );
       return false;
     } finally {
       setIsSubmittingExpense(false);
@@ -247,8 +308,12 @@ export default function Index() {
   const deleteCategory = async (categoryId) => {
     if (isDeletingCategory) return;
     setIsDeletingCategory(true);
-    const categoryName =
-      categories.find((category) => category.id === categoryId)?.name || "Category";
+    const categoryToRemove = categories.find((category) => category.id === categoryId);
+    const categoryName = categoryToRemove?.name || "Category";
+    const associatedExpenses = expenses.filter(
+      (expense) => expense.category_id === categoryId
+    );
+
     try {
       await CategoriesService.deleteCategory(categoryId);
       setCategories((prevCategories) =>
@@ -260,10 +325,63 @@ export default function Index() {
       );
       setShowDeleteConfirm(false);
       setCategoryToDelete(null);
-      showToast(`Deleted ${categoryName}`, "success");
+      setCategoryToEdit((currentCategory) =>
+        currentCategory?.id === categoryId ? null : currentCategory
+      );
+      setShowEditCategoryForm((isOpen) =>
+        categoryToEdit?.id === categoryId ? false : isOpen
+      );
+      setSelectedCategoryForExpenses((currentCategory) =>
+        currentCategory?.id === categoryId ? null : currentCategory
+      );
+      setShowWeeklyExpenses((isOpen) =>
+        selectedCategoryForExpenses?.id === categoryId ? false : isOpen
+      );
+      setShowMonthlyExpenses((isOpen) =>
+        selectedCategoryForExpenses?.id === categoryId ? false : isOpen
+      );
+
+      showToast(`Deleted ${categoryName}`, "success", {
+        actionLabel: "Undo",
+        duration: 7000,
+        onAction: async () => {
+          if (!categoryToRemove) return;
+          try {
+            const restoredCategory = await CategoriesService.createCategory({
+              name: categoryToRemove.name,
+              weekly_budget: categoryToRemove.weekly_budget,
+            });
+
+            setCategories((prevCategories) => [...prevCategories, restoredCategory]);
+
+            if (associatedExpenses.length > 0) {
+              const restoredExpenses = await ExpensesService.createExpenses(
+                associatedExpenses.map((expense) => ({
+                  category_id: restoredCategory.id,
+                  description: expense.description,
+                  amount: expense.amount,
+                  expense_date: expense.expense_date,
+                }))
+              );
+              setExpenses((prevExpenses) => [...prevExpenses, ...restoredExpenses]);
+            }
+
+            showToast(`Restored ${restoredCategory.name}`, "success");
+          } catch (error) {
+            console.error("Failed to restore category:", error);
+            showToast(
+              `Failed to restore category: ${getFriendlyErrorMessage(error, "category")}`,
+              "error"
+            );
+          }
+        },
+      });
     } catch (error) {
       console.error('Failed to delete category:', error);
-      showToast(`Failed to delete category: ${getErrorMessage(error)}`, "error");
+      showToast(
+        `Failed to delete category: ${getFriendlyErrorMessage(error, "category")}`,
+        "error"
+      );
     } finally {
       setIsDeletingCategory(false);
     }
@@ -334,7 +452,10 @@ export default function Index() {
         );
       }
       console.error("Failed to update category:", error);
-      showToast(`Failed to update category: ${getErrorMessage(error)}`, "error");
+      showToast(
+        `Failed to update category: ${getFriendlyErrorMessage(error, "category")}`,
+        "error"
+      );
       return false;
     } finally {
       setIsUpdatingCategory(false);
@@ -344,6 +465,8 @@ export default function Index() {
   const deleteExpense = async (_categoryId, expenseId) => {
     if (isDeletingExpense) return;
     setIsDeletingExpense(true);
+    const expenseToRestore = expenses.find((expense) => expense.id === expenseId);
+
     try {
       await ExpensesService.deleteExpense(expenseId);
       setExpenses((prevExpenses) =>
@@ -351,10 +474,42 @@ export default function Index() {
       );
       setShowDeleteExpenseConfirm(false);
       setExpenseToDelete(null);
-      showToast("Expense deleted", "success");
+      setExpenseToEdit((currentExpense) =>
+        currentExpense?.id === expenseId ? null : currentExpense
+      );
+      setShowEditExpenseForm((isOpen) =>
+        expenseToEdit?.id === expenseId ? false : isOpen
+      );
+      showToast("Expense deleted", "success", {
+        actionLabel: "Undo",
+        duration: 7000,
+        onAction: async () => {
+          if (!expenseToRestore) return;
+          try {
+            const restoredExpense = await ExpensesService.createExpense({
+              category_id: expenseToRestore.category_id,
+              description: expenseToRestore.description,
+              amount: expenseToRestore.amount,
+              expense_date: expenseToRestore.expense_date,
+            });
+
+            setExpenses((prevExpenses) => [...prevExpenses, restoredExpense]);
+            showToast("Expense restored", "success");
+          } catch (error) {
+            console.error("Failed to restore expense:", error);
+            showToast(
+              `Failed to restore expense: ${getFriendlyErrorMessage(error, "expense")}`,
+              "error"
+            );
+          }
+        },
+      });
     } catch (error) {
       console.error('Failed to delete expense:', error);
-      showToast(`Failed to delete expense: ${getErrorMessage(error)}`, "error");
+      showToast(
+        `Failed to delete expense: ${getFriendlyErrorMessage(error, "expense")}`,
+        "error"
+      );
     } finally {
       setIsDeletingExpense(false);
     }
@@ -417,7 +572,10 @@ export default function Index() {
         );
       }
       console.error("Failed to update expense:", error);
-      showToast(`Failed to update expense: ${getErrorMessage(error)}`, "error");
+      showToast(
+        `Failed to update expense: ${getFriendlyErrorMessage(error, "expense")}`,
+        "error"
+      );
       return false;
     } finally {
       setIsUpdatingExpense(false);
@@ -590,7 +748,10 @@ export default function Index() {
         setExpenses(expensesData);
       } catch (error) {
         console.error('Failed to load data:', error);
-        showToast(`Failed to load data: ${getErrorMessage(error)}`, "error");
+        showToast(
+          `Failed to load data: ${getFriendlyErrorMessage(error)}`,
+          "error"
+        );
       } finally {
         setLoading(false);
       }
@@ -893,6 +1054,7 @@ export default function Index() {
         {/* Category Form Modal */}
         {showCategoryForm && (
           <CategoryForm
+            categories={categories}
             onSubmit={addCategory}
             onCancel={() => setShowCategoryForm(false)}
             isSubmitting={isSubmittingCategory}
@@ -916,6 +1078,7 @@ export default function Index() {
         {showEditCategoryForm && categoryToEdit && (
           <EditCategoryForm
             category={categoryToEdit}
+            categories={categories}
             onSubmit={(updatedCategory) =>
               updateCategory(categoryToEdit.id, updatedCategory)
             }
@@ -1043,7 +1206,24 @@ function ToastContainer({ toasts, onDismiss }) {
             role="status"
             aria-live="polite"
           >
-            <p className="text-sm font-medium">{toast.message}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">{toast.message}</p>
+              {toast.actionLabel && typeof toast.onAction === "function" && (
+                <button
+                  type="button"
+                  className="mt-1 text-xs font-semibold underline underline-offset-2"
+                  onClick={async () => {
+                    try {
+                      await toast.onAction();
+                    } finally {
+                      onDismiss(toast.id);
+                    }
+                  }}
+                >
+                  {toast.actionLabel}
+                </button>
+              )}
+            </div>
             <button
               type="button"
               className="text-sm font-bold opacity-70 hover:opacity-100"
@@ -1188,7 +1368,7 @@ function DeleteExpenseConfirmModal({ expense, onConfirm, onCancel, isDeleting })
   );
 }
 
-function CategoryForm({ onSubmit, onCancel, isSubmitting }) {
+function CategoryForm({ categories, onSubmit, onCancel, isSubmitting }) {
   const [formData, setFormData] = useState({
     name: "",
     weeklyBudget: "",
@@ -1204,6 +1384,8 @@ function CategoryForm({ onSubmit, onCancel, isSubmitting }) {
       validationErrors.name = "Category name is required.";
     } else if (trimmedName.length > 255) {
       validationErrors.name = "Category name must be 255 characters or fewer.";
+    } else if (hasDuplicateCategoryName(trimmedName, categories)) {
+      validationErrors.name = "A category with this name already exists.";
     }
 
     if (formData.weeklyBudget === "") {
@@ -1297,7 +1479,7 @@ function CategoryForm({ onSubmit, onCancel, isSubmitting }) {
   );
 }
 
-function EditCategoryForm({ category, onSubmit, onCancel, isSubmitting }) {
+function EditCategoryForm({ category, categories, onSubmit, onCancel, isSubmitting }) {
   const [formData, setFormData] = useState({
     name: category.name || "",
     weeklyBudget: String(category.weekly_budget ?? ""),
@@ -1313,6 +1495,8 @@ function EditCategoryForm({ category, onSubmit, onCancel, isSubmitting }) {
       validationErrors.name = "Category name is required.";
     } else if (trimmedName.length > 255) {
       validationErrors.name = "Category name must be 255 characters or fewer.";
+    } else if (hasDuplicateCategoryName(trimmedName, categories, category.id)) {
+      validationErrors.name = "A category with this name already exists.";
     }
 
     if (formData.weeklyBudget === "") {
