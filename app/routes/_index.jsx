@@ -33,11 +33,16 @@ export default function Index() {
   const [selectedCategoryForExpenses, setSelectedCategoryForExpenses] = useState(null);
   const [showMonthlyReport, setShowMonthlyReport] = useState(false);
   const [selectedReportMonth, setSelectedReportMonth] = useState('');
+  const [quickAddOpenCategoryId, setQuickAddOpenCategoryId] = useState(null);
+  const [quickAddForms, setQuickAddForms] = useState({});
+  const [quickAddErrors, setQuickAddErrors] = useState({});
+  const [lastQuickDescription, setLastQuickDescription] = useState("");
   const [isSubmittingCategory, setIsSubmittingCategory] = useState(false);
   const [isSubmittingExpense, setIsSubmittingExpense] = useState(false);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
   const [isDeletingExpense, setIsDeletingExpense] = useState(false);
   const toastTimeoutsRef = useRef(new Map());
+  const quickAmountInputRefs = useRef({});
 
   const dismissToast = (id) => {
     const timeoutId = toastTimeoutsRef.current.get(id);
@@ -63,6 +68,67 @@ export default function Index() {
       toastTimeoutsRef.current.clear();
     };
   }, []);
+
+  const getDefaultQuickAddForm = () => ({
+    amount: "",
+    description: lastQuickDescription,
+    date: new Date().toISOString().split("T")[0],
+  });
+
+  const getQuickAddForm = (categoryId) =>
+    quickAddForms[categoryId] || getDefaultQuickAddForm();
+
+  const updateQuickAddForm = (categoryId, patch) => {
+    setQuickAddForms((prevForms) => ({
+      ...prevForms,
+      [categoryId]: {
+        ...(prevForms[categoryId] || getDefaultQuickAddForm()),
+        ...patch,
+      },
+    }));
+  };
+
+  const clearQuickAddError = (categoryId, field) => {
+    setQuickAddErrors((prevErrors) => {
+      const categoryErrors = prevErrors[categoryId];
+      if (!categoryErrors || !categoryErrors[field]) return prevErrors;
+
+      return {
+        ...prevErrors,
+        [categoryId]: {
+          ...categoryErrors,
+          [field]: undefined,
+        },
+      };
+    });
+  };
+
+  const validateQuickAdd = (form) => {
+    const errors = {};
+    const amount = Number(form.amount);
+
+    if (form.amount === "") {
+      errors.amount = "Amount is required.";
+    } else if (!Number.isFinite(amount) || amount <= 0) {
+      errors.amount = "Amount must be greater than 0.";
+    }
+
+    if ((form.description || "").trim().length > 500) {
+      errors.description = "Note must be 500 characters or fewer.";
+    }
+
+    return errors;
+  };
+
+  useEffect(() => {
+    if (!quickAddOpenCategoryId) return;
+
+    const frameId = requestAnimationFrame(() => {
+      quickAmountInputRefs.current[quickAddOpenCategoryId]?.focus();
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [quickAddOpenCategoryId]);
 
   const addCategory = async (newCategory) => {
     if (isSubmittingCategory) return;
@@ -105,12 +171,71 @@ export default function Index() {
       setShowExpenseForm(false);
       setSelectedCategoryId(null);
       showToast("Expense added", "success");
+      return true;
     } catch (error) {
       console.error('Failed to add expense:', error);
       showToast(`Failed to create expense: ${getErrorMessage(error)}`, "error");
+      return false;
     } finally {
       setIsSubmittingExpense(false);
     }
+  };
+
+  const toggleQuickAdd = (categoryId) => {
+    setQuickAddOpenCategoryId((currentId) => {
+      if (currentId === categoryId) return null;
+      return categoryId;
+    });
+
+    setQuickAddForms((prevForms) => {
+      if (prevForms[categoryId]) return prevForms;
+      return {
+        ...prevForms,
+        [categoryId]: getDefaultQuickAddForm(),
+      };
+    });
+  };
+
+  const handleQuickAddSubmit = async (event, categoryId) => {
+    event.preventDefault();
+
+    const form = getQuickAddForm(categoryId);
+    const validationErrors = validateQuickAdd(form);
+
+    if (Object.keys(validationErrors).length > 0) {
+      setQuickAddErrors((prevErrors) => ({
+        ...prevErrors,
+        [categoryId]: validationErrors,
+      }));
+      return;
+    }
+
+    const description = (form.description || "").trim();
+    const wasCreated = await addExpense(categoryId, {
+      description: description || "Expense",
+      amount: Number(form.amount),
+      date: form.date,
+    });
+
+    if (!wasCreated) return;
+
+    const rememberedDescription = description || lastQuickDescription;
+
+    if (description) setLastQuickDescription(description);
+
+    setQuickAddErrors((prevErrors) => ({
+      ...prevErrors,
+      [categoryId]: {},
+    }));
+    setQuickAddForms((prevForms) => ({
+      ...prevForms,
+      [categoryId]: {
+        amount: "",
+        description: rememberedDescription,
+        date: new Date().toISOString().split("T")[0],
+      },
+    }));
+    quickAmountInputRefs.current[categoryId]?.focus();
   };
 
   const deleteCategory = async (categoryId) => {
@@ -406,12 +531,24 @@ export default function Index() {
                   <h2 className="text-lg font-semibold text-gray-900 truncate">{category.name}</h2>
                   <div className="flex items-center gap-1">
                     <button
+                      onClick={() => toggleQuickAdd(category.id)}
+                      className={`px-2 h-8 rounded-md text-xs font-medium transition-colors ${
+                        quickAddOpenCategoryId === category.id
+                          ? "bg-green-100 text-green-700 border border-green-300"
+                          : "bg-green-500 hover:bg-green-600 text-white"
+                      }`}
+                      title="Quick add expense"
+                    >
+                      {quickAddOpenCategoryId === category.id ? "Close" : "Quick"}
+                    </button>
+                    <button
                       onClick={() => {
+                        setQuickAddOpenCategoryId(null);
                         setSelectedCategoryId(category.id);
                         setShowExpenseForm(true);
                       }}
                       className="bg-blue-500 hover:bg-blue-600 text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors"
-                      title="Add expense"
+                      title="Add expense with full form"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -507,6 +644,79 @@ export default function Index() {
                     <p className="text-xs text-gray-500 text-center py-2">No expenses yet</p>
                   )}
                 </div>
+
+                {quickAddOpenCategoryId === category.id && (
+                  <form
+                    onSubmit={(event) => handleQuickAddSubmit(event, category.id)}
+                    className="mt-3 pt-3 border-t border-gray-200 space-y-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={(element) => {
+                          if (element) {
+                            quickAmountInputRefs.current[category.id] = element;
+                          } else {
+                            delete quickAmountInputRefs.current[category.id];
+                          }
+                        }}
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        placeholder="Amount"
+                        value={getQuickAddForm(category.id).amount}
+                        onChange={(event) => {
+                          updateQuickAddForm(category.id, { amount: event.target.value });
+                          clearQuickAddError(category.id, "amount");
+                        }}
+                        aria-label={`Quick add amount for ${category.name}`}
+                        aria-invalid={Boolean(quickAddErrors[category.id]?.amount)}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isSubmittingExpense}
+                        className="bg-green-500 hover:bg-green-600 disabled:bg-green-300 text-white px-3 py-2 rounded-md text-sm font-medium"
+                      >
+                        {isSubmittingExpense ? "Adding..." : "Add"}
+                      </button>
+                    </div>
+                    {quickAddErrors[category.id]?.amount && (
+                      <p className="text-xs text-red-600">{quickAddErrors[category.id].amount}</p>
+                    )}
+
+                    <input
+                      type="text"
+                      maxLength={500}
+                      placeholder="Note (optional)"
+                      value={getQuickAddForm(category.id).description}
+                      onChange={(event) => {
+                        updateQuickAddForm(category.id, { description: event.target.value });
+                        clearQuickAddError(category.id, "description");
+                      }}
+                      aria-label={`Quick add note for ${category.name}`}
+                      aria-invalid={Boolean(quickAddErrors[category.id]?.description)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
+                    />
+                    {quickAddErrors[category.id]?.description && (
+                      <p className="text-xs text-red-600">{quickAddErrors[category.id].description}</p>
+                    )}
+
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-gray-500">Uses today's date</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuickAddOpenCategoryId(null);
+                          setSelectedCategoryId(category.id);
+                          setShowExpenseForm(true);
+                        }}
+                        className="text-blue-600 hover:text-blue-700 font-medium"
+                      >
+                        More fields
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             );
           })}            
