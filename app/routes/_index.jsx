@@ -70,8 +70,6 @@ export default function Index() {
   const [toasts, setToasts] = useState([]);
 
   const [showCategoryForm, setShowCategoryForm] = useState(false);
-  const [showExpenseForm, setShowExpenseForm] = useState(false);
-  const [selectedCategoryId, setSelectedCategoryId] = useState(null);
   const [showEditCategoryForm, setShowEditCategoryForm] = useState(false);
   const [categoryToEdit, setCategoryToEdit] = useState(null);
   const [showEditExpenseForm, setShowEditExpenseForm] = useState(false);
@@ -189,6 +187,10 @@ export default function Index() {
 
     if ((form.description || "").trim().length > 500) {
       errors.description = "Note must be 500 characters or fewer.";
+    }
+
+    if (!form.date) {
+      errors.date = "Date is required.";
     }
 
     return errors;
@@ -377,9 +379,7 @@ export default function Index() {
       if (expenseMatchesCurrentSearch(createdExpense)) {
         setExpenses((prevExpenses) => [...prevExpenses, createdExpense]);
       }
-      
-      setShowExpenseForm(false);
-      setSelectedCategoryId(null);
+
       showToast(
         expenseMatchesCurrentSearch(createdExpense)
           ? "Expense added"
@@ -1108,38 +1108,42 @@ export default function Index() {
               const monthlyBudget = getMonthlyBudget(category.weekly_budget);
 
             return (
-              <div key={category.id} className="bg-white rounded-lg shadow-md p-3 sm:p-4">
+              <div key={category.id} className="bg-white rounded-lg shadow-md p-3">
                 {/* Header with title and actions */}
-                <div className="flex justify-between items-center mb-3">
-                  <h2 className="text-lg font-semibold text-gray-900 truncate">{category.name}</h2>
+                <div className="flex justify-between items-center mb-2">
+                  <h2 className="text-[1.05rem] font-semibold text-gray-900 truncate">{category.name}</h2>
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => toggleQuickAdd(category.id)}
-                      className={`px-2 h-8 rounded-md text-xs font-medium transition-colors ${
+                      className={`w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
                         quickAddOpenCategoryId === category.id
-                          ? "bg-green-100 text-green-700 border border-green-300"
-                          : "bg-green-500 hover:bg-green-600 text-white"
+                          ? "bg-green-100 text-green-700 border-green-300"
+                          : "bg-white border-green-500 text-green-700 hover:bg-green-50"
                       }`}
-                      title="Quick add expense"
+                      title={
+                        quickAddOpenCategoryId === category.id
+                          ? "Close quick add"
+                          : "Open quick add"
+                      }
+                      aria-label={
+                        quickAddOpenCategoryId === category.id
+                          ? `Close quick add for ${category.name}`
+                          : `Open quick add for ${category.name}`
+                      }
                     >
-                      {quickAddOpenCategoryId === category.id ? "Close" : "Quick"}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setQuickAddOpenCategoryId(null);
-                        setSelectedCategoryId(category.id);
-                        setShowExpenseForm(true);
-                      }}
-                      className="bg-blue-500 hover:bg-blue-600 text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors"
-                      title="Add expense with full form"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                      </svg>
+                      {quickAddOpenCategoryId === category.id ? (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                      )}
                     </button>
                     <button
                       onClick={() => handleEditCategoryClick(category)}
-                      className="text-amber-600 hover:text-amber-700 w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+                      className="w-7 h-7 rounded-md border border-gray-200 bg-white text-amber-600 hover:text-amber-700 hover:bg-amber-50 flex items-center justify-center transition-colors"
                       title="Edit category"
                       aria-label="Edit category"
                     >
@@ -1149,10 +1153,10 @@ export default function Index() {
                     </button>
                     <button
                       onClick={() => handleDeleteClick(category)}
-                      className="text-red-500 hover:text-red-700 w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+                      className="w-7 h-7 rounded-md border border-gray-200 bg-white text-red-500 hover:text-red-700 hover:bg-red-50 flex items-center justify-center transition-colors"
                       title="Delete category"
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                       </svg>
                     </button>
@@ -1160,10 +1164,10 @@ export default function Index() {
                 </div>
                 
                 {/* Compact Budget Overview */}
-                <div className="flex flex-row gap-3 mb-3">
+                <div className="flex items-center gap-2 mb-2">
                   {/* Weekly Budget */}
                   <div 
-                    className="flex-1 cursor-pointer hover:bg-blue-50 rounded-md p-1 transition-colors"
+                    className="flex-1 cursor-pointer hover:bg-blue-50 rounded-md px-1 py-1 transition-colors"
                     onClick={() => {
                       if (categoryExpenses.length > 0) {
                         setSelectedCategoryForExpenses(category);
@@ -1172,9 +1176,9 @@ export default function Index() {
                     }}
                     title={categoryExpenses.length > 0 ? "Click to view weekly expenses" : "No expenses to show"}
                   >
-                    <div className="flex justify-between items-center text-xs text-gray-600 mb-1">
+                    <div className="flex justify-between items-center text-[11px] text-gray-600 mb-1">
                       <span>Weekly</span>
-                      <span className="font-bold">{formatCurrency(weeklySpent)} / {formatCurrency(category.weekly_budget)}</span>
+                      <span className="font-semibold">{formatCurrency(weeklySpent)} / {formatCurrency(category.weekly_budget)}</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-1.5">
                       <div 
@@ -1186,7 +1190,7 @@ export default function Index() {
 
                   {/* Monthly Budget */}
                   <div 
-                    className="flex-1 cursor-pointer hover:bg-purple-50 rounded-md p-1 transition-colors"
+                    className="flex-1 cursor-pointer hover:bg-purple-50 rounded-md px-1 py-1 transition-colors"
                     onClick={() => {
                       if (categoryExpenses.length > 0) {
                         setSelectedCategoryForExpenses(category);
@@ -1195,9 +1199,9 @@ export default function Index() {
                     }}
                     title={categoryExpenses.length > 0 ? "Click to view monthly expenses" : "No expenses to show"}
                   >
-                    <div className="flex justify-between items-center text-xs text-gray-600 mb-1">
+                    <div className="flex justify-between items-center text-[11px] text-gray-600 mb-1">
                       <span>Monthly</span>
-                      <span className="font-bold">{formatCurrency(monthlySpent)} / {formatCurrency(monthlyBudget)}</span>
+                      <span className="font-semibold">{formatCurrency(monthlySpent)} / {formatCurrency(monthlyBudget)}</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-1.5">
                       <div 
@@ -1206,13 +1210,11 @@ export default function Index() {
                       ></div>
                     </div>
                   </div>
-                </div>
 
-                <div className="border-t border-gray-100 pt-2">
                   <button
                     type="button"
                     onClick={() => toggleRecentExpenses(category.id)}
-                    className="w-full flex items-center justify-center py-1 text-gray-500 hover:text-gray-700 transition-colors"
+                    className="shrink-0 w-7 h-7 rounded-md border border-gray-200 bg-white text-gray-500 hover:text-gray-700 hover:bg-gray-50 flex items-center justify-center transition-colors"
                     aria-label={
                       isRecentExpensesExpanded
                         ? `Hide recent expenses for ${category.name}`
@@ -1221,7 +1223,7 @@ export default function Index() {
                     aria-expanded={isRecentExpensesExpanded}
                   >
                     <svg
-                      className={`w-4 h-4 transition-transform ${
+                      className={`w-3.5 h-3.5 transition-transform ${
                         isRecentExpensesExpanded ? "rotate-180" : ""
                       }`}
                       fill="none"
@@ -1239,11 +1241,11 @@ export default function Index() {
                 </div>
 
                 {isRecentExpensesExpanded && (
-                  <div className="space-y-1 mt-2">
+                  <div className="space-y-1 mt-1 border-t border-gray-100 pt-2">
                     {recentCategoryExpenses.map((expense) => (
                       <div
                         key={expense.id}
-                        className="flex justify-between items-center text-xs group bg-gray-50 rounded p-2"
+                        className="flex justify-between items-center text-[11px] group bg-gray-50 rounded-md px-2 py-1.5"
                       >
                         <div className="flex-1 min-w-0 pr-2">
                           <span className="text-gray-700 truncate block font-medium">
@@ -1264,7 +1266,7 @@ export default function Index() {
                             aria-label="Edit expense"
                           >
                             <svg
-                              className="w-4 h-4"
+                              className="w-3.5 h-3.5"
                               fill="none"
                               stroke="currentColor"
                               viewBox="0 0 24 24"
@@ -1283,7 +1285,7 @@ export default function Index() {
                             title="Delete expense"
                           >
                             <svg
-                              className="w-4 h-4"
+                              className="w-3.5 h-3.5"
                               fill="none"
                               stroke="currentColor"
                               viewBox="0 0 24 24"
@@ -1310,7 +1312,7 @@ export default function Index() {
                 {quickAddOpenCategoryId === category.id && (
                   <form
                     onSubmit={(event) => handleQuickAddSubmit(event, category.id)}
-                    className="mt-3 pt-3 border-t border-gray-200 space-y-2"
+                    className="mt-2 pt-2 border-t border-gray-200 space-y-2"
                   >
                     <div className="flex items-center gap-2">
                       <input
@@ -1332,7 +1334,18 @@ export default function Index() {
                         }}
                         aria-label={`Quick add amount for ${category.name}`}
                         aria-invalid={Boolean(quickAddErrors[category.id]?.amount)}
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
+                        className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
+                      />
+                      <input
+                        type="date"
+                        value={getQuickAddForm(category.id).date}
+                        onChange={(event) => {
+                          updateQuickAddForm(category.id, { date: event.target.value });
+                          clearQuickAddError(category.id, "date");
+                        }}
+                        aria-label={`Quick add date for ${category.name}`}
+                        aria-invalid={Boolean(quickAddErrors[category.id]?.date)}
+                        className="w-36 px-2 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
                       />
                       <button
                         type="submit"
@@ -1344,6 +1357,9 @@ export default function Index() {
                     </div>
                     {quickAddErrors[category.id]?.amount && (
                       <p className="text-xs text-red-600">{quickAddErrors[category.id].amount}</p>
+                    )}
+                    {quickAddErrors[category.id]?.date && (
+                      <p className="text-xs text-red-600">{quickAddErrors[category.id].date}</p>
                     )}
 
                     <input
@@ -1362,21 +1378,6 @@ export default function Index() {
                     {quickAddErrors[category.id]?.description && (
                       <p className="text-xs text-red-600">{quickAddErrors[category.id].description}</p>
                     )}
-
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">Uses today's date</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setQuickAddOpenCategoryId(null);
-                          setSelectedCategoryId(category.id);
-                          setShowExpenseForm(true);
-                        }}
-                        className="text-blue-600 hover:text-blue-700 font-medium"
-                      >
-                        More fields
-                      </button>
-                    </div>
                   </form>
                 )}
               </div>
@@ -1426,19 +1427,6 @@ export default function Index() {
             onSubmit={addCategory}
             onCancel={() => setShowCategoryForm(false)}
             isSubmitting={isSubmittingCategory}
-          />
-        )}
-
-        {/* Expense Form Modal */}
-        {showExpenseForm && (
-          <ExpenseForm
-            categoryId={selectedCategoryId}
-            onSubmit={addExpense}
-            onCancel={() => {
-              setShowExpenseForm(false);
-              setSelectedCategoryId(null);
-            }}
-            isSubmitting={isSubmittingExpense}
           />
         )}
 
