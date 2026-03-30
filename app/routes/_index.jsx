@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "@remix-run/react";
 import { CategoriesService } from "../libs/categories.services";
 import { ExpensesService } from "../libs/expenses.services";
+import { RecurringPostingService } from "../libs/recurringPosting.services";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -218,6 +220,7 @@ export default function Index() {
     const filters = {
       limit: EXPENSE_PAGE_SIZE,
       offset,
+      entry_type: "variable",
     };
 
     if (debouncedSearchQuery) {
@@ -371,7 +374,8 @@ export default function Index() {
         category_id: categoryId,
         description: expense.description,
         amount: expense.amount,
-        expense_date: expense.date
+        expense_date: expense.date,
+        entry_type: "variable",
       };
       
       const createdExpense = await ExpensesService.createExpense(expenseData);
@@ -902,6 +906,7 @@ export default function Index() {
     const reportFilters = {
       start_date: startDate,
       end_date: endDate,
+      entry_type: "variable",
       limit: 5000,
       offset: 0,
     };
@@ -942,6 +947,11 @@ export default function Index() {
       setIsLoadingExpenses(true);
       try {
         if (isInitialLoad) {
+          try {
+            await RecurringPostingService.runCurrentMonthCatchup();
+          } catch (catchupError) {
+            console.error("Recurring catch-up failed:", catchupError);
+          }
           const categoriesData = await CategoriesService.getCategories();
           if (!isActive) return;
           setCategories(categoriesData);
@@ -1015,26 +1025,43 @@ export default function Index() {
         <header className="mb-4 sm:mb-6">
           <div className="flex items-center justify-between gap-3">
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Budget Tracker</h1>
-            <button
-              type="button"
-              onClick={() => setShowReportPicker((isOpen) => !isOpen)}
-              className={`shrink-0 p-2 rounded-md border transition-colors ${
-                showReportPicker
-                  ? "bg-blue-50 border-blue-300 text-blue-700"
-                  : "bg-white border-gray-300 text-gray-600 hover:text-gray-800"
-              }`}
-              aria-label="Toggle monthly report options"
-              title="Monthly report"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                />
-              </svg>
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                to="/overview"
+                className="shrink-0 p-2 rounded-md border bg-white border-gray-300 text-gray-600 hover:text-gray-800 transition-colors"
+                aria-label="Open financial overview"
+                title="Financial overview"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M3 13h8V3H3v10zm10 8h8V3h-8v18zm-10 0h8v-6H3v6z"
+                  />
+                </svg>
+              </Link>
+              <button
+                type="button"
+                onClick={() => setShowReportPicker((isOpen) => !isOpen)}
+                className={`shrink-0 p-2 rounded-md border transition-colors ${
+                  showReportPicker
+                    ? "bg-blue-50 border-blue-300 text-blue-700"
+                    : "bg-white border-gray-300 text-gray-600 hover:text-gray-800"
+                }`}
+                aria-label="Toggle monthly report options"
+                title="Monthly report"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                  />
+                </svg>
+              </button>
+            </div>
           </div>
 
           {showReportPicker && (
