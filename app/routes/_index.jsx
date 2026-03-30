@@ -60,6 +60,9 @@ const hasDuplicateCategoryName = (name, categories = [], excludeId = null) => {
   });
 };
 
+const EXPENSE_PAGE_SIZE = 200;
+const RECENT_EXPENSES_LIMIT = 5;
+
 export default function Index() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -81,7 +84,15 @@ export default function Index() {
   const [showMonthlyExpenses, setShowMonthlyExpenses] = useState(false);
   const [selectedCategoryForExpenses, setSelectedCategoryForExpenses] = useState(null);
   const [showMonthlyReport, setShowMonthlyReport] = useState(false);
+  const [monthlyReportData, setMonthlyReportData] = useState([]);
   const [selectedReportMonth, setSelectedReportMonth] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  const [showReportPicker, setShowReportPicker] = useState(false);
+  const [hasMoreExpenses, setHasMoreExpenses] = useState(false);
+  const [isLoadingExpenses, setIsLoadingExpenses] = useState(false);
+  const [isLoadingMoreExpenses, setIsLoadingMoreExpenses] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [quickAddOpenCategoryId, setQuickAddOpenCategoryId] = useState(null);
   const [quickAddForms, setQuickAddForms] = useState({});
   const [quickAddErrors, setQuickAddErrors] = useState({});
@@ -92,8 +103,10 @@ export default function Index() {
   const [isUpdatingExpense, setIsUpdatingExpense] = useState(false);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
   const [isDeletingExpense, setIsDeletingExpense] = useState(false);
+  const [expandedRecentExpensesCategoryId, setExpandedRecentExpensesCategoryId] = useState(null);
   const toastTimeoutsRef = useRef(new Map());
   const quickAmountInputRefs = useRef({});
+  const hasLoadedInitialDataRef = useRef(false);
 
   const dismissToast = (id) => {
     const timeoutId = toastTimeoutsRef.current.get(id);
@@ -191,6 +204,138 @@ export default function Index() {
     return () => cancelAnimationFrame(frameId);
   }, [quickAddOpenCategoryId]);
 
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  const buildExpenseFilters = (offset = 0) => {
+    const filters = {
+      limit: EXPENSE_PAGE_SIZE,
+      offset,
+    };
+
+    if (debouncedSearchQuery) {
+      filters.search_query = debouncedSearchQuery;
+    }
+
+    return filters;
+  };
+
+  const expenseMatchesCurrentSearch = (expense) => {
+    if (!expense) return false;
+
+    if (!debouncedSearchQuery) return true;
+
+    const normalizedSearchQuery = debouncedSearchQuery.toLowerCase();
+    const descriptionMatches = String(expense.description || "")
+      .toLowerCase()
+      .includes(normalizedSearchQuery);
+
+    if (descriptionMatches) return true;
+
+    const expenseCategory = categories.find(
+      (category) => category.id === expense.category_id
+    );
+    return String(expenseCategory?.name || "")
+      .toLowerCase()
+      .includes(normalizedSearchQuery);
+  };
+
+  const categoryMatchesCurrentSearch = (category) => {
+    if (!debouncedSearchQuery) return true;
+    const normalizedSearchQuery = debouncedSearchQuery.toLowerCase();
+    return String(category?.name || "")
+      .toLowerCase()
+      .includes(normalizedSearchQuery);
+  };
+
+  const buildCategoryExpensesForDisplay = (categoryId) => {
+    const categoryExpenses = getCategoryExpenses(categoryId);
+    if (!debouncedSearchQuery) return categoryExpenses;
+
+    const normalizedSearchQuery = debouncedSearchQuery.toLowerCase();
+
+    return categoryExpenses.filter((expense) => {
+      if (
+        String(expense.description || "")
+          .toLowerCase()
+          .includes(normalizedSearchQuery)
+      ) {
+        return true;
+      }
+
+      const expenseCategory = categories.find(
+        (category) => category.id === expense.category_id
+      );
+      return String(expenseCategory?.name || "")
+        .toLowerCase()
+        .includes(normalizedSearchQuery);
+    });
+  };
+
+  const categoryHasMatchingExpenses = (categoryId) => {
+    const categoryExpenses = getCategoryExpenses(categoryId);
+    if (!debouncedSearchQuery) return categoryExpenses.length > 0;
+
+    const normalizedSearchQuery = debouncedSearchQuery.toLowerCase();
+    return categoryExpenses.some((expense) =>
+      String(expense.description || "")
+        .toLowerCase()
+        .includes(normalizedSearchQuery)
+    );
+  };
+
+  const categoryMatchesCurrentResults = (category) => {
+    if (!debouncedSearchQuery) return true;
+
+    if (categoryMatchesCurrentSearch(category)) {
+      return true;
+    }
+
+    return categoryHasMatchingExpenses(category.id);
+  };
+
+  const loadExpensesPage = async ({ append = false } = {}) => {
+    const targetOffset = append ? expenses.length : 0;
+
+    if (append) {
+      if (!hasMoreExpenses || isLoadingMoreExpenses) return;
+      setIsLoadingMoreExpenses(true);
+    } else {
+      setIsLoadingExpenses(true);
+    }
+
+    try {
+      const expenseData = await ExpensesService.getExpenses(
+        buildExpenseFilters(targetOffset)
+      );
+
+      if (append) {
+        setExpenses((prevExpenses) => [...prevExpenses, ...expenseData]);
+      } else {
+        setExpenses(expenseData);
+      }
+
+      setHasMoreExpenses(expenseData.length === EXPENSE_PAGE_SIZE);
+    } catch (error) {
+      console.error("Failed to fetch expenses:", error);
+      showToast(
+        `Failed to fetch expenses: ${getFriendlyErrorMessage(error, "expense")}`,
+        "error"
+      );
+    } finally {
+      if (append) {
+        setIsLoadingMoreExpenses(false);
+      } else {
+        setIsLoadingExpenses(false);
+      }
+    }
+  };
+
   const addCategory = async (newCategory) => {
     if (isSubmittingCategory) return;
     setIsSubmittingCategory(true);
@@ -229,12 +374,18 @@ export default function Index() {
       
       const createdExpense = await ExpensesService.createExpense(expenseData);
       
-      // Update the local expenses state
-      setExpenses(prev => [...prev, createdExpense]);
+      if (expenseMatchesCurrentSearch(createdExpense)) {
+        setExpenses((prevExpenses) => [...prevExpenses, createdExpense]);
+      }
       
       setShowExpenseForm(false);
       setSelectedCategoryId(null);
-      showToast("Expense added", "success");
+      showToast(
+        expenseMatchesCurrentSearch(createdExpense)
+          ? "Expense added"
+          : "Expense added (hidden by current search)",
+        "success"
+      );
       return true;
     } catch (error) {
       console.error('Failed to add expense:', error);
@@ -261,6 +412,12 @@ export default function Index() {
         [categoryId]: getDefaultQuickAddForm(),
       };
     });
+  };
+
+  const toggleRecentExpenses = (categoryId) => {
+    setExpandedRecentExpensesCategoryId((currentId) =>
+      currentId === categoryId ? null : categoryId
+    );
   };
 
   const handleQuickAddSubmit = async (event, categoryId) => {
@@ -310,11 +467,21 @@ export default function Index() {
     setIsDeletingCategory(true);
     const categoryToRemove = categories.find((category) => category.id === categoryId);
     const categoryName = categoryToRemove?.name || "Category";
-    const associatedExpenses = expenses.filter(
+    let associatedExpensesSnapshot = expenses.filter(
       (expense) => expense.category_id === categoryId
     );
 
     try {
+      try {
+        associatedExpensesSnapshot = await ExpensesService.getExpenses({
+          category_id: categoryId,
+          limit: 5000,
+          offset: 0,
+        });
+      } catch (snapshotError) {
+        console.error("Failed to fetch full category expenses for undo:", snapshotError);
+      }
+
       await CategoriesService.deleteCategory(categoryId);
       setCategories((prevCategories) =>
         prevCategories.filter((category) => category.id !== categoryId)
@@ -325,6 +492,9 @@ export default function Index() {
       );
       setShowDeleteConfirm(false);
       setCategoryToDelete(null);
+      setExpandedRecentExpensesCategoryId((currentId) =>
+        currentId === categoryId ? null : currentId
+      );
       setCategoryToEdit((currentCategory) =>
         currentCategory?.id === categoryId ? null : currentCategory
       );
@@ -354,16 +524,24 @@ export default function Index() {
 
             setCategories((prevCategories) => [...prevCategories, restoredCategory]);
 
-            if (associatedExpenses.length > 0) {
+            if (associatedExpensesSnapshot.length > 0) {
               const restoredExpenses = await ExpensesService.createExpenses(
-                associatedExpenses.map((expense) => ({
+                associatedExpensesSnapshot.map((expense) => ({
                   category_id: restoredCategory.id,
                   description: expense.description,
                   amount: expense.amount,
                   expense_date: expense.expense_date,
                 }))
               );
-              setExpenses((prevExpenses) => [...prevExpenses, ...restoredExpenses]);
+              const visibleRestoredExpenses = restoredExpenses.filter(
+                expenseMatchesCurrentSearch
+              );
+              if (visibleRestoredExpenses.length > 0) {
+                setExpenses((prevExpenses) => [
+                  ...prevExpenses,
+                  ...visibleRestoredExpenses,
+                ]);
+              }
             }
 
             showToast(`Restored ${restoredCategory.name}`, "success");
@@ -493,8 +671,12 @@ export default function Index() {
               expense_date: expenseToRestore.expense_date,
             });
 
-            setExpenses((prevExpenses) => [...prevExpenses, restoredExpense]);
-            showToast("Expense restored", "success");
+            if (expenseMatchesCurrentSearch(restoredExpense)) {
+              setExpenses((prevExpenses) => [...prevExpenses, restoredExpense]);
+              showToast("Expense restored", "success");
+            } else {
+              showToast("Expense restored (hidden by current search)", "success");
+            }
           } catch (error) {
             console.error("Failed to restore expense:", error);
             showToast(
@@ -554,14 +736,22 @@ export default function Index() {
         expense_date: updatedExpense.date,
       });
 
-      setExpenses((prevExpenses) =>
-        prevExpenses.map((expense) =>
-          expense.id === expenseId ? savedExpense : expense
-        )
-      );
+      setExpenses((prevExpenses) => {
+        if (expenseMatchesCurrentSearch(savedExpense)) {
+          return prevExpenses.map((expense) =>
+            expense.id === expenseId ? savedExpense : expense
+          );
+        }
+        return prevExpenses.filter((expense) => expense.id !== expenseId);
+      });
       setExpenseToEdit(null);
       setShowEditExpenseForm(false);
-      showToast("Expense updated", "success");
+      showToast(
+        expenseMatchesCurrentSearch(savedExpense)
+          ? "Expense updated"
+          : "Expense updated (hidden by current search)",
+        "success"
+      );
       return true;
     } catch (error) {
       if (originalExpense) {
@@ -585,10 +775,6 @@ export default function Index() {
   // Helper function to get expenses for a category
   const getCategoryExpenses = (categoryId) => {
     return expenses.filter(expense => expense.category_id === categoryId);
-  };
-
-  const getTotalSpent = (categoryExpenses) => {
-    return categoryExpenses.reduce((total, expense) => total + expense.amount, 0);
   };
 
   const getWeeklySpent = (categoryExpenses) => {
@@ -684,17 +870,6 @@ export default function Index() {
       .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date)); // Most recent first
   };
 
-  // Get expenses for a specific month/year
-  const getExpensesForMonth = (categoryExpenses, year, month) => {
-    return categoryExpenses
-      .filter(expense => {
-        const expenseDate = new Date(expense.expense_date);
-        return expenseDate.getFullYear() === year && 
-               expenseDate.getMonth() === month;
-      })
-      .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
-  };
-
   // Generate list of available months (current month + previous 11 months)
   const getAvailableMonths = () => {
     const months = [];
@@ -717,85 +892,189 @@ export default function Index() {
     return months;
   };
 
-  // Generate monthly report data
-  const generateMonthlyReport = (year, month) => {
-    const reportData = categories.map(category => {
-      const categoryExpenses = getCategoryExpenses(category.id);
-      const monthExpenses = getExpensesForMonth(categoryExpenses, year, month);
-      const totalSpent = monthExpenses.reduce((total, expense) => total + expense.amount, 0);
-      
-      return {
-        category,
-        expenses: monthExpenses,
-        totalSpent,
-        expenseCount: monthExpenses.length
-      };
-    }).filter(item => item.expenseCount > 0); // Only include categories with expenses
-    
-    return reportData;
+  // Generate monthly report data for selected month directly from the database
+  const generateMonthlyReport = async (year, month) => {
+    const monthStart = new Date(year, month, 1);
+    const monthEnd = new Date(year, month + 1, 0);
+    const startDate = monthStart.toISOString().split("T")[0];
+    const endDate = monthEnd.toISOString().split("T")[0];
+
+    const reportFilters = {
+      start_date: startDate,
+      end_date: endDate,
+      limit: 5000,
+      offset: 0,
+    };
+
+    const reportExpenses = await ExpensesService.getExpenses(reportFilters);
+    const scopedCategories = categories;
+
+    return scopedCategories
+      .map((category) => {
+        const monthExpenses = reportExpenses
+          .filter((expense) => expense.category_id === category.id)
+          .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
+        const totalSpent = monthExpenses.reduce(
+          (total, expense) => total + expense.amount,
+          0
+        );
+
+        return {
+          category,
+          expenses: monthExpenses,
+          totalSpent,
+          expenseCount: monthExpenses.length,
+        };
+      })
+      .filter((item) => item.expenseCount > 0);
   };
 
-  // Load data when component mounts
   useEffect(() => {
+    let isActive = true;
+
     const loadData = async () => {
-      try {
+      const isInitialLoad = !hasLoadedInitialDataRef.current;
+
+      if (isInitialLoad) {
         setLoading(true);
-        const [categoriesData, expensesData] = await Promise.all([
-          CategoriesService.getCategories(),
-          ExpensesService.getExpenses()
-        ]);
-        setCategories(categoriesData);
-        setExpenses(expensesData);
+      }
+
+      setIsLoadingExpenses(true);
+      try {
+        if (isInitialLoad) {
+          const categoriesData = await CategoriesService.getCategories();
+          if (!isActive) return;
+          setCategories(categoriesData);
+          hasLoadedInitialDataRef.current = true;
+        }
+
+        const filteredExpenses = await ExpensesService.getExpenses(
+          buildExpenseFilters(0)
+        );
+        if (!isActive) return;
+
+        setExpenses(filteredExpenses);
+        setHasMoreExpenses(filteredExpenses.length === EXPENSE_PAGE_SIZE);
       } catch (error) {
-        console.error('Failed to load data:', error);
+        if (!isActive) return;
+        console.error("Failed to load data:", error);
         showToast(
           `Failed to load data: ${getFriendlyErrorMessage(error)}`,
           "error"
         );
       } finally {
-        setLoading(false);
+        if (!isActive) return;
+        if (isInitialLoad) {
+          setLoading(false);
+        }
+        setIsLoadingExpenses(false);
       }
     };
 
     loadData();
-  }, []);
+
+    return () => {
+      isActive = false;
+    };
+  }, [debouncedSearchQuery]);
+
+  const loadMoreExpenses = async () => {
+    await loadExpensesPage({ append: true });
+  };
+
+  const displayedCategories = categories.filter((category) => {
+    return categoryMatchesCurrentResults(category);
+  });
+
+  const handleGenerateReport = async () => {
+    if (!selectedReportMonth || isGeneratingReport) return;
+
+    const [year, month] = selectedReportMonth.split("-").map(Number);
+    setIsGeneratingReport(true);
+    try {
+      const reportData = await generateMonthlyReport(year, month);
+      setMonthlyReportData(reportData);
+      setShowMonthlyReport(true);
+      setShowReportPicker(false);
+    } catch (error) {
+      console.error("Failed to generate report:", error);
+      showToast(
+        `Failed to generate report: ${getFriendlyErrorMessage(error)}`,
+        "error"
+      );
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
 
 
   return (
     <div className="min-h-screen bg-gray-50 p-3 sm:p-6">
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       <div className="max-w-6xl mx-auto">
-        <header className="mb-6 sm:mb-8">
-          <h1 className="text-center text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 mb-4">Budget Tracker</h1>
-          
-          {/* Monthly Report Button */}
-          <div className="flex justify-center">
-            <div className="flex items-center gap-3 bg-white rounded-lg shadow-md p-3">
-              <label className="text-sm font-medium text-gray-700">Monthly Report:</label>
-              <select
-                value={selectedReportMonth}
-                onChange={(e) => setSelectedReportMonth(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-              >
-                <option value="">Select a month...</option>
-                {getAvailableMonths().map((month) => (
-                  <option key={month.value} value={month.value}>
-                    {month.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={() => {
-                  if (selectedReportMonth) {
-                    setShowMonthlyReport(true);
-                  }
-                }}
-                disabled={!selectedReportMonth}
-                className="bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors"
-              >
-                Generate Report
-              </button>
+        <header className="mb-4 sm:mb-6">
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Budget Tracker</h1>
+            <button
+              type="button"
+              onClick={() => setShowReportPicker((isOpen) => !isOpen)}
+              className={`shrink-0 p-2 rounded-md border transition-colors ${
+                showReportPicker
+                  ? "bg-blue-50 border-blue-300 text-blue-700"
+                  : "bg-white border-gray-300 text-gray-600 hover:text-gray-800"
+              }`}
+              aria-label="Toggle monthly report options"
+              title="Monthly report"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                />
+              </svg>
+            </button>
+          </div>
+
+          {showReportPicker && (
+            <div className="mt-2 flex justify-end">
+              <div className="w-full sm:w-80 bg-white border border-gray-200 rounded-md shadow-sm p-2">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={selectedReportMonth}
+                    onChange={(e) => setSelectedReportMonth(e.target.value)}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  >
+                    <option value="">Select month...</option>
+                    {getAvailableMonths().map((month) => (
+                      <option key={month.value} value={month.value}>
+                        {month.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={handleGenerateReport}
+                    disabled={!selectedReportMonth || isGeneratingReport}
+                    className="bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white px-3 py-2 rounded-md font-medium text-sm transition-colors"
+                  >
+                    {isGeneratingReport ? "..." : "Report"}
+                  </button>
+                </div>
+              </div>
             </div>
+          )}
+
+          {/* Search */}
+          <div className="mt-2">
+            <input
+              type="text"
+              aria-label="Search categories and expenses"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search categories and expense notes..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            />
           </div>
         </header>
 
@@ -807,11 +1086,22 @@ export default function Index() {
           </div>
         )}
 
+        {!loading && isLoadingExpenses && (
+          <div className="text-center py-4">
+            <p className="text-sm text-gray-600">Refreshing expenses...</p>
+          </div>
+        )}
+
         {/* Categories Grid */}
         {!loading && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
-            {categories.map((category) => {
-              const categoryExpenses = getCategoryExpenses(category.id);
+            {displayedCategories.map((category) => {
+              const categoryExpenses = buildCategoryExpensesForDisplay(category.id);
+              const recentCategoryExpenses = [...categoryExpenses]
+                .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date))
+                .slice(0, RECENT_EXPENSES_LIMIT);
+              const isRecentExpensesExpanded =
+                expandedRecentExpensesCategoryId === category.id;
               const weeklySpent = getWeeklySpent(categoryExpenses);
               const monthlySpent = getCurrentMonthSpent(categoryExpenses);
               // Monthly budget based on days in current month
@@ -918,45 +1208,104 @@ export default function Index() {
                   </div>
                 </div>
 
-                {/* Recent Expenses - More Compact */}
-                <div className="space-y-1">
-                  {categoryExpenses
-                    .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date))
-                    .slice(0, 2)
-                    .map((expense) => (
-                    <div key={expense.id} className="flex justify-between items-center text-xs group bg-gray-50 rounded p-2">
-                      <div className="flex-1 min-w-0 pr-2">
-                        <span className="text-gray-700 truncate block font-medium">{expense.description}</span>
-                        <span className="text-gray-400">{new Date(expense.expense_date).toLocaleDateString()}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-gray-900 font-semibold">{formatCurrency(expense.amount)}</span>
-                        <button
-                          onClick={() => handleEditExpenseClick(expense)}
-                          className="opacity-100 text-amber-600 hover:text-amber-700 transition-opacity"
-                          title="Edit expense"
-                          aria-label="Edit expense"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2.5 2.5 0 113.536 3.536L12.536 14.536a2 2 0 01-.879.513l-3.244.811a.5.5 0 01-.606-.606l.811-3.244A2 2 0 019 11z" />
-                          </svg>
-                        </button>
-                        <button
-                          onClick={() => handleDeleteExpenseClick(category.id, expense)}
-                          className="opacity-100 text-red-500 hover:text-red-700 transition-opacity"
-                          title="Delete expense"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  {categoryExpenses.length === 0 && (
-                    <p className="text-xs text-gray-500 text-center py-2">No expenses yet</p>
-                  )}
+                <div className="border-t border-gray-100 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleRecentExpenses(category.id)}
+                    className="w-full flex items-center justify-center py-1 text-gray-500 hover:text-gray-700 transition-colors"
+                    aria-label={
+                      isRecentExpensesExpanded
+                        ? `Hide recent expenses for ${category.name}`
+                        : `Show recent expenses for ${category.name}`
+                    }
+                    aria-expanded={isRecentExpensesExpanded}
+                  >
+                    <svg
+                      className={`w-4 h-4 transition-transform ${
+                        isRecentExpensesExpanded ? "rotate-180" : ""
+                      }`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M19 9l-7 7-7-7"
+                      />
+                    </svg>
+                  </button>
                 </div>
+
+                {isRecentExpensesExpanded && (
+                  <div className="space-y-1 mt-2">
+                    {recentCategoryExpenses.map((expense) => (
+                      <div
+                        key={expense.id}
+                        className="flex justify-between items-center text-xs group bg-gray-50 rounded p-2"
+                      >
+                        <div className="flex-1 min-w-0 pr-2">
+                          <span className="text-gray-700 truncate block font-medium">
+                            {expense.description}
+                          </span>
+                          <span className="text-gray-400">
+                            {new Date(expense.expense_date).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-900 font-semibold">
+                            {formatCurrency(expense.amount)}
+                          </span>
+                          <button
+                            onClick={() => handleEditExpenseClick(expense)}
+                            className="opacity-100 text-amber-600 hover:text-amber-700 transition-opacity"
+                            title="Edit expense"
+                            aria-label="Edit expense"
+                          >
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2.5 2.5 0 113.536 3.536L12.536 14.536a2 2 0 01-.879.513l-3.244.811a.5.5 0 01-.606-.606l.811-3.244A2 2 0 019 11z"
+                              />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteExpenseClick(category.id, expense)}
+                            className="opacity-100 text-red-500 hover:text-red-700 transition-opacity"
+                            title="Delete expense"
+                          >
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M6 18L18 6M6 6l12 12"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {recentCategoryExpenses.length === 0 && (
+                      <p className="text-xs text-gray-500 text-center py-2">
+                        No expenses yet
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {quickAddOpenCategoryId === category.id && (
                   <form
@@ -1036,6 +1385,19 @@ export default function Index() {
           </div>
         )}
 
+        {!loading && displayedCategories.length > 0 && hasMoreExpenses && (
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={loadMoreExpenses}
+              disabled={isLoadingMoreExpenses}
+              className="bg-gray-200 hover:bg-gray-300 disabled:bg-gray-100 text-gray-700 px-4 py-2 rounded-md text-sm font-medium"
+            >
+              {isLoadingMoreExpenses ? "Loading..." : "Load More Expenses"}
+            </button>
+          </div>
+        )}
+
         {/* Empty State */}
         {!loading && categories.length === 0 && (
           <div className="text-center py-12">
@@ -1048,6 +1410,12 @@ export default function Index() {
             >
               Create Your First Category
             </button>
+          </div>
+        )}
+
+        {!loading && categories.length > 0 && displayedCategories.length === 0 && (
+          <div className="text-center py-10">
+            <p className="text-gray-600">No categories or expenses match your search.</p>
           </div>
         )}
 
@@ -1138,13 +1506,11 @@ export default function Index() {
         {showMonthlyReport && selectedReportMonth && (
           <MonthlyReportModal
             selectedMonth={selectedReportMonth}
-            reportData={(() => {
-              const [year, month] = selectedReportMonth.split('-').map(Number);
-              return generateMonthlyReport(year, month);
-            })()}
+            reportData={monthlyReportData}
             onClose={() => {
               setShowMonthlyReport(false);
               setSelectedReportMonth('');
+              setMonthlyReportData([]);
             }}
           />
         )}

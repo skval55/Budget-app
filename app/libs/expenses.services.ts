@@ -35,7 +35,9 @@ export interface ExpenseFilters {
   category_id?: number;
   start_date?: string;
   end_date?: string;
+  search_query?: string;
   limit?: number;
+  offset?: number;
 }
 
 // Service class for expense operations
@@ -79,13 +81,18 @@ export class ExpensesService {
       query = query.lte('expense_date', filters.end_date);
     }
 
+    if (filters.search_query) {
+      query = query.ilike('description', `%${filters.search_query}%`);
+    }
+
     // Order by expense date (most recent first)
     query = query.order('expense_date', { ascending: false });
     query = query.order('created_at', { ascending: false });
 
-    // Apply limit
+    // Apply pagination
     if (filters.limit) {
-      query = query.limit(filters.limit);
+      const offset = filters.offset || 0;
+      query = query.range(offset, offset + filters.limit - 1);
     }
 
     const { data: expenses, error } = await query;
