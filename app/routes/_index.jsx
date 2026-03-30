@@ -1,11 +1,25 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { CategoriesService } from "../libs/categories.services";
 import { ExpensesService } from "../libs/expenses.services";
+
+const currencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const formatCurrency = (amount) =>
+  currencyFormatter.format(Number.isFinite(amount) ? amount : 0);
+
+const getErrorMessage = (error) =>
+  error instanceof Error ? error.message : "Unexpected error";
 
 export default function Index() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expenses, setExpenses] = useState([]);
+  const [toasts, setToasts] = useState([]);
 
   const [showCategoryForm, setShowCategoryForm] = useState(false);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
@@ -19,8 +33,40 @@ export default function Index() {
   const [selectedCategoryForExpenses, setSelectedCategoryForExpenses] = useState(null);
   const [showMonthlyReport, setShowMonthlyReport] = useState(false);
   const [selectedReportMonth, setSelectedReportMonth] = useState('');
+  const [isSubmittingCategory, setIsSubmittingCategory] = useState(false);
+  const [isSubmittingExpense, setIsSubmittingExpense] = useState(false);
+  const [isDeletingCategory, setIsDeletingCategory] = useState(false);
+  const [isDeletingExpense, setIsDeletingExpense] = useState(false);
+  const toastTimeoutsRef = useRef(new Map());
+
+  const dismissToast = (id) => {
+    const timeoutId = toastTimeoutsRef.current.get(id);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      toastTimeoutsRef.current.delete(id);
+    }
+    setToasts((prevToasts) => prevToasts.filter((toast) => toast.id !== id));
+  };
+
+  const showToast = (message, type = "success") => {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setToasts((prevToasts) => [...prevToasts, { id, message, type }]);
+    const timeoutId = setTimeout(() => {
+      dismissToast(id);
+    }, 3500);
+    toastTimeoutsRef.current.set(id, timeoutId);
+  };
+
+  useEffect(() => {
+    return () => {
+      toastTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+      toastTimeoutsRef.current.clear();
+    };
+  }, []);
 
   const addCategory = async (newCategory) => {
+    if (isSubmittingCategory) return;
+    setIsSubmittingCategory(true);
     try {
       // Only send the data that the database expects (no id, it's auto-generated)
       const categoryData = {
@@ -29,16 +75,20 @@ export default function Index() {
       };
       
       const createdCategory = await CategoriesService.createCategory(categoryData);
-      setCategories([...categories, createdCategory]);
+      setCategories((prevCategories) => [...prevCategories, createdCategory]);
       setShowCategoryForm(false);
+      showToast(`Added ${createdCategory.name}`, "success");
     } catch (error) {
       console.error('Failed to add category:', error);
-      // You can add user-friendly error handling here
-      alert('Failed to create category: ' + error.message);
+      showToast(`Failed to create category: ${getErrorMessage(error)}`, "error");
+    } finally {
+      setIsSubmittingCategory(false);
     }
   };
 
   const addExpense = async (categoryId, expense) => {
+    if (isSubmittingExpense) return;
+    setIsSubmittingExpense(true);
     try {
       const expenseData = {
         category_id: categoryId,
@@ -54,23 +104,37 @@ export default function Index() {
       
       setShowExpenseForm(false);
       setSelectedCategoryId(null);
+      showToast("Expense added", "success");
     } catch (error) {
       console.error('Failed to add expense:', error);
-      alert('Failed to create expense: ' + error.message);
+      showToast(`Failed to create expense: ${getErrorMessage(error)}`, "error");
+    } finally {
+      setIsSubmittingExpense(false);
     }
   };
 
   const deleteCategory = async (categoryId) => {
+    if (isDeletingCategory) return;
+    setIsDeletingCategory(true);
+    const categoryName =
+      categories.find((category) => category.id === categoryId)?.name || "Category";
     try {
       await CategoriesService.deleteCategory(categoryId);
-      setCategories(categories.filter(cat => cat.id !== categoryId));
+      setCategories((prevCategories) =>
+        prevCategories.filter((category) => category.id !== categoryId)
+      );
       // Also remove associated expenses from local state
-      setExpenses(expenses.filter(exp => exp.category_id !== categoryId));
+      setExpenses((prevExpenses) =>
+        prevExpenses.filter((expense) => expense.category_id !== categoryId)
+      );
       setShowDeleteConfirm(false);
       setCategoryToDelete(null);
+      showToast(`Deleted ${categoryName}`, "success");
     } catch (error) {
       console.error('Failed to delete category:', error);
-      alert('Failed to delete category: ' + error.message);
+      showToast(`Failed to delete category: ${getErrorMessage(error)}`, "error");
+    } finally {
+      setIsDeletingCategory(false);
     }
   };
 
@@ -79,15 +143,22 @@ export default function Index() {
     setShowDeleteConfirm(true);
   };
 
-  const deleteExpense = async (categoryId, expenseId) => {
+  const deleteExpense = async (_categoryId, expenseId) => {
+    if (isDeletingExpense) return;
+    setIsDeletingExpense(true);
     try {
       await ExpensesService.deleteExpense(expenseId);
-      setExpenses(expenses.filter(exp => exp.id !== expenseId));
+      setExpenses((prevExpenses) =>
+        prevExpenses.filter((expense) => expense.id !== expenseId)
+      );
       setShowDeleteExpenseConfirm(false);
       setExpenseToDelete(null);
+      showToast("Expense deleted", "success");
     } catch (error) {
       console.error('Failed to delete expense:', error);
-      alert('Failed to delete expense: ' + error.message);
+      showToast(`Failed to delete expense: ${getErrorMessage(error)}`, "error");
+    } finally {
+      setIsDeletingExpense(false);
     }
   };
 
@@ -209,12 +280,12 @@ export default function Index() {
       .sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
   };
 
-  // Generate list of available months (last 12 months)
+  // Generate list of available months (current month + previous 11 months)
   const getAvailableMonths = () => {
     const months = [];
     const now = new Date();
     
-    for (let i = 1; i <= 12; i++) {
+    for (let i = 0; i < 12; i++) {
       const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const year = date.getFullYear();
       const month = date.getMonth();
@@ -262,7 +333,7 @@ export default function Index() {
         setExpenses(expensesData);
       } catch (error) {
         console.error('Failed to load data:', error);
-        alert('Failed to load data: ' + error.message);
+        showToast(`Failed to load data: ${getErrorMessage(error)}`, "error");
       } finally {
         setLoading(false);
       }
@@ -274,6 +345,7 @@ export default function Index() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-3 sm:p-6">
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       <div className="max-w-6xl mx-auto">
         <header className="mb-6 sm:mb-8">
           <h1 className="text-center text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 mb-4">Budget Tracker</h1>
@@ -324,10 +396,8 @@ export default function Index() {
               const categoryExpenses = getCategoryExpenses(category.id);
               const weeklySpent = getWeeklySpent(categoryExpenses);
               const monthlySpent = getCurrentMonthSpent(categoryExpenses);
-              const weeklyRemaining = category.weekly_budget - weeklySpent;
               // Monthly budget based on days in current month
               const monthlyBudget = getMonthlyBudget(category.weekly_budget);
-              const monthlyRemaining = monthlyBudget - monthlySpent;
 
             return (
               <div key={category.id} className="bg-white rounded-lg shadow-md p-3 sm:p-4">
@@ -374,7 +444,7 @@ export default function Index() {
                   >
                     <div className="flex justify-between items-center text-xs text-gray-600 mb-1">
                       <span>Weekly</span>
-                      <span className="font-bold">${weeklySpent.toFixed(0)} / ${category.weekly_budget.toFixed(0)}</span>
+                      <span className="font-bold">{formatCurrency(weeklySpent)} / {formatCurrency(category.weekly_budget)}</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-1.5">
                       <div 
@@ -397,7 +467,7 @@ export default function Index() {
                   >
                     <div className="flex justify-between items-center text-xs text-gray-600 mb-1">
                       <span>Monthly</span>
-                      <span className="font-bold">${monthlySpent.toFixed(0)} / ${monthlyBudget.toFixed(0)}</span>
+                      <span className="font-bold">{formatCurrency(monthlySpent)} / {formatCurrency(monthlyBudget)}</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-1.5">
                       <div 
@@ -420,7 +490,7 @@ export default function Index() {
                         <span className="text-gray-400">{new Date(expense.expense_date).toLocaleDateString()}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-gray-900 font-semibold">${expense.amount.toFixed(0)}</span>
+                        <span className="text-gray-900 font-semibold">{formatCurrency(expense.amount)}</span>
                         <button
                           onClick={() => handleDeleteExpenseClick(category.id, expense)}
                           className="opacity-100 text-red-500 hover:text-red-700 transition-opacity"
@@ -463,6 +533,7 @@ export default function Index() {
           <CategoryForm
             onSubmit={addCategory}
             onCancel={() => setShowCategoryForm(false)}
+            isSubmitting={isSubmittingCategory}
           />
         )}
 
@@ -475,30 +546,7 @@ export default function Index() {
               setShowExpenseForm(false);
               setSelectedCategoryId(null);
             }}
-          />
-        )}
-
-        {/* Delete Confirmation Modal */}
-        {showDeleteConfirm && categoryToDelete && (
-          <DeleteConfirmModal
-            category={categoryToDelete}
-            onConfirm={() => deleteCategory(categoryToDelete.id)}
-            onCancel={() => {
-              setShowDeleteConfirm(false);
-              setCategoryToDelete(null);
-            }}
-          />
-        )}
-
-        {/* Delete Expense Confirmation Modal */}
-        {showDeleteExpenseConfirm && expenseToDelete && (
-          <DeleteExpenseConfirmModal
-            expense={expenseToDelete.expense}
-            onConfirm={() => deleteExpense(expenseToDelete.categoryId, expenseToDelete.expense.id)}
-            onCancel={() => {
-              setShowDeleteExpenseConfirm(false);
-              setExpenseToDelete(null);
-            }}
+            isSubmitting={isSubmittingExpense}
           />
         )}
 
@@ -542,233 +590,479 @@ export default function Index() {
           />
         )}
 
+        {/* Delete Confirmation Modal */}
+        {showDeleteConfirm && categoryToDelete && (
+          <DeleteConfirmModal
+            category={categoryToDelete}
+            onConfirm={() => deleteCategory(categoryToDelete.id)}
+            onCancel={() => {
+              setShowDeleteConfirm(false);
+              setCategoryToDelete(null);
+            }}
+            isDeleting={isDeletingCategory}
+          />
+        )}
+
+        {/* Delete Expense Confirmation Modal */}
+        {showDeleteExpenseConfirm && expenseToDelete && (
+          <DeleteExpenseConfirmModal
+            expense={expenseToDelete.expense}
+            onConfirm={() => deleteExpense(expenseToDelete.categoryId, expenseToDelete.expense.id)}
+            onCancel={() => {
+              setShowDeleteExpenseConfirm(false);
+              setExpenseToDelete(null);
+            }}
+            isDeleting={isDeletingExpense}
+          />
+        )}
+
         {/* Add New Category Button */}
          <button
             onClick={() => setShowCategoryForm(true)}
-            disabled={loading}
+            disabled={loading || isSubmittingCategory}
             className="mt-5 w-full sm:w-auto bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-6 py-3 sm:py-2 rounded-lg font-medium text-lg sm:text-base"
           >
-            {loading ? 'Loading...' : 'Add New Category'}
+            {loading ? 'Loading...' : isSubmittingCategory ? 'Saving...' : 'Add New Category'}
           </button>
       </div>
     </div>
   );
 }
 
-function DeleteExpenseConfirmModal({ expense, onConfirm, onCancel }) {
+function ToastContainer({ toasts, onDismiss }) {
+  if (toasts.length === 0) return null;
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-[60]">
-      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg sm:text-xl font-semibold mb-4 text-red-600">Delete Expense</h2>
-        <p className="text-gray-700 mb-2">
-          Are you sure you want to delete this expense?
-        </p>
-        <div className="bg-gray-50 rounded-lg p-3 mb-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <p className="font-medium text-gray-900">{expense.description}</p>
-              <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
-            </div>
-            <p className="text-lg font-semibold text-gray-900">${expense.amount.toFixed(2)}</p>
+    <div className="fixed top-4 left-0 right-0 sm:left-auto sm:right-4 z-[90] w-full sm:max-w-sm px-4 sm:px-0 space-y-2 pointer-events-none">
+      {toasts.map((toast) => {
+        const toneClasses =
+          toast.type === "error"
+            ? "border-red-200 bg-red-50 text-red-800"
+            : "border-green-200 bg-green-50 text-green-800";
+
+        return (
+          <div
+            key={toast.id}
+            className={`pointer-events-auto rounded-md border shadow-md px-3 py-2 flex items-start justify-between gap-2 ${toneClasses}`}
+            role="status"
+            aria-live="polite"
+          >
+            <p className="text-sm font-medium">{toast.message}</p>
+            <button
+              type="button"
+              className="text-sm font-bold opacity-70 hover:opacity-100"
+              onClick={() => onDismiss(toast.id)}
+              aria-label="Dismiss notification"
+            >
+              ×
+            </button>
           </div>
-        </div>
-        <p className="text-sm text-gray-600 mb-6">
-          This action cannot be undone.
-        </p>
-        <div className="flex flex-col sm:flex-row gap-3">
-          <button
-            onClick={onConfirm}
-            className="w-full sm:flex-1 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
-          >
-            Delete Expense
-          </button>
-          <button
-            onClick={onCancel}
-            className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
-          >
-            Cancel
-          </button>
-        </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function ModalFrame({
+  children,
+  onClose,
+  titleId,
+  maxWidth = "max-w-md",
+  zIndex = "z-50",
+}) {
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+
+    const getFocusableElements = () =>
+      Array.from(panel.querySelectorAll(FOCUSABLE_SELECTOR));
+
+    const focusableElements = getFocusableElements();
+    const preferredFocus =
+      focusableElements.find((element) => element.hasAttribute("autofocus")) ||
+      focusableElements[0] ||
+      panel;
+    preferredFocus.focus();
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event) => {
+      const modalPanels = Array.from(
+        document.querySelectorAll('[data-modal-frame="true"]')
+      );
+      const topMostPanel = modalPanels[modalPanels.length - 1];
+      if (topMostPanel !== panel) return;
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const focusables = getFocusableElements();
+      if (focusables.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const activeElement = document.activeElement;
+
+      if (event.shiftKey && activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div className={`fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 ${zIndex}`}>
+      <div
+        ref={panelRef}
+        data-modal-frame="true"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className={`bg-white rounded-lg p-4 sm:p-6 w-full ${maxWidth} max-h-[90vh] overflow-y-auto`}
+      >
+        {children}
       </div>
     </div>
   );
 }
 
+function DeleteExpenseConfirmModal({ expense, onConfirm, onCancel, isDeleting }) {
+  return (
+    <ModalFrame onClose={onCancel} titleId="delete-expense-title" zIndex="z-[60]">
+      <h2 id="delete-expense-title" className="text-lg sm:text-xl font-semibold mb-4 text-red-600">
+        Delete Expense
+      </h2>
+      <p className="text-gray-700 mb-2">Are you sure you want to delete this expense?</p>
+      <div className="bg-gray-50 rounded-lg p-3 mb-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <p className="font-medium text-gray-900">{expense.description}</p>
+            <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
+          </div>
+          <p className="text-lg font-semibold text-gray-900">{formatCurrency(expense.amount)}</p>
+        </div>
+      </div>
+      <p className="text-sm text-gray-600 mb-6">This action cannot be undone.</p>
+      <div className="flex flex-col sm:flex-row gap-3">
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={isDeleting}
+          className="w-full sm:flex-1 bg-red-500 hover:bg-red-600 active:bg-red-700 disabled:bg-red-300 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+        >
+          {isDeleting ? "Deleting..." : "Delete Expense"}
+        </button>
+        <button
+          type="button"
+          autoFocus
+          onClick={onCancel}
+          disabled={isDeleting}
+          className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 disabled:bg-gray-200 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+        >
+          Cancel
+        </button>
+      </div>
+    </ModalFrame>
+  );
+}
 
-function CategoryForm({ onSubmit, onCancel }) {
+function CategoryForm({ onSubmit, onCancel, isSubmitting }) {
   const [formData, setFormData] = useState({
-    name: '',
-    weeklyBudget: '',
-    monthlyBudget: ''
+    name: "",
+    weeklyBudget: "",
   });
+  const [errors, setErrors] = useState({});
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
+  const validate = () => {
+    const validationErrors = {};
+    const trimmedName = formData.name.trim();
+    const weeklyBudget = Number(formData.weeklyBudget);
+
+    if (!trimmedName) {
+      validationErrors.name = "Category name is required.";
+    } else if (trimmedName.length > 255) {
+      validationErrors.name = "Category name must be 255 characters or fewer.";
+    }
+
+    if (formData.weeklyBudget === "") {
+      validationErrors.weeklyBudget = "Weekly budget is required.";
+    } else if (!Number.isFinite(weeklyBudget) || weeklyBudget <= 0) {
+      validationErrors.weeklyBudget = "Weekly budget must be greater than 0.";
+    }
+
+    setErrors(validationErrors);
+    return Object.keys(validationErrors).length === 0;
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (!validate()) return;
+
     onSubmit({
-      name: formData.name,
-      weekly_budget: parseFloat(formData.weeklyBudget),
-    //   monthlyBudget: parseFloat(formData.monthlyBudget)
+      name: formData.name.trim(),
+      weekly_budget: Number(formData.weeklyBudget),
     });
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg sm:text-xl font-semibold mb-4">Add New Category</h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Category Name
-            </label>
-            <input
-              type="text"
-              required
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Weekly Budget ($)
-            </label>
-            <input
-              type="number"
-              step="0.01"
-              required
-              value={formData.weeklyBudget}
-              onChange={(e) => setFormData({ ...formData, weeklyBudget: e.target.value })}
-              className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
-            />
-          </div>
-          
-          <div className="flex flex-col sm:flex-row gap-3 pt-4">
-            <button
-              type="submit"
-              className="w-full sm:flex-1 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
-            >
-              Add Category
-            </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-function DeleteConfirmModal({ category, onConfirm, onCancel }) {
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-[60]">
-      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg sm:text-xl font-semibold mb-4 text-red-600">Delete Category</h2>
-        <p className="text-gray-700 mb-2">
-          Are you sure you want to delete the <strong>"{category.name}"</strong> category?
-        </p>
-        <p className="text-sm text-gray-600 mb-6">
-          This will permanently delete the category and all expenses associated with it. This action cannot be undone.
-        </p>
-        <div className="flex flex-col sm:flex-row gap-3">
+    <ModalFrame onClose={onCancel} titleId="add-category-title">
+      <h2 id="add-category-title" className="text-lg sm:text-xl font-semibold mb-4">
+        Add New Category
+      </h2>
+      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <div>
+          <label htmlFor="category-name" className="block text-sm font-medium text-gray-700 mb-2">
+            Category Name
+          </label>
+          <input
+            id="category-name"
+            type="text"
+            autoFocus
+            maxLength={255}
+            value={formData.name}
+            onChange={(event) => {
+              setFormData({ ...formData, name: event.target.value });
+              if (errors.name) setErrors({ ...errors, name: undefined });
+            }}
+            aria-invalid={Boolean(errors.name)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.name && <p className="mt-1 text-xs text-red-600">{errors.name}</p>}
+        </div>
+        <div>
+          <label htmlFor="category-weekly-budget" className="block text-sm font-medium text-gray-700 mb-2">
+            Weekly Budget ($)
+          </label>
+          <input
+            id="category-weekly-budget"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={formData.weeklyBudget}
+            onChange={(event) => {
+              setFormData({ ...formData, weeklyBudget: event.target.value });
+              if (errors.weeklyBudget) {
+                setErrors({ ...errors, weeklyBudget: undefined });
+              }
+            }}
+            aria-invalid={Boolean(errors.weeklyBudget)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.weeklyBudget && (
+            <p className="mt-1 text-xs text-red-600">{errors.weeklyBudget}</p>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3 pt-4">
           <button
-            onClick={onConfirm}
-            className="w-full sm:flex-1 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 disabled:bg-blue-300 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
           >
-            Delete Category
+            {isSubmitting ? "Saving..." : "Add Category"}
           </button>
           <button
+            type="button"
             onClick={onCancel}
-            className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 disabled:bg-gray-200 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
           >
             Cancel
           </button>
         </div>
-      </div>
-    </div>
+      </form>
+    </ModalFrame>
   );
 }
 
+function DeleteConfirmModal({ category, onConfirm, onCancel, isDeleting }) {
+  return (
+    <ModalFrame onClose={onCancel} titleId="delete-category-title" zIndex="z-[60]">
+      <h2 id="delete-category-title" className="text-lg sm:text-xl font-semibold mb-4 text-red-600">
+        Delete Category
+      </h2>
+      <p className="text-gray-700 mb-2">
+        Are you sure you want to delete the <strong>"{category.name}"</strong> category?
+      </p>
+      <p className="text-sm text-gray-600 mb-6">
+        This will permanently delete the category and all expenses associated with it. This action
+        cannot be undone.
+      </p>
+      <div className="flex flex-col sm:flex-row gap-3">
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={isDeleting}
+          className="w-full sm:flex-1 bg-red-500 hover:bg-red-600 active:bg-red-700 disabled:bg-red-300 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+        >
+          {isDeleting ? "Deleting..." : "Delete Category"}
+        </button>
+        <button
+          type="button"
+          autoFocus
+          onClick={onCancel}
+          disabled={isDeleting}
+          className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 disabled:bg-gray-200 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+        >
+          Cancel
+        </button>
+      </div>
+    </ModalFrame>
+  );
+}
 
-function ExpenseForm({ categoryId, onSubmit, onCancel }) {
+function ExpenseForm({ categoryId, onSubmit, onCancel, isSubmitting }) {
   const [formData, setFormData] = useState({
-    description: '',
-    amount: '',
-    date: new Date().toISOString().split('T')[0]
+    description: "",
+    amount: "",
+    date: new Date().toISOString().split("T")[0],
   });
+  const [errors, setErrors] = useState({});
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
+  const validate = () => {
+    const validationErrors = {};
+    const trimmedDescription = formData.description.trim();
+    const amount = Number(formData.amount);
+
+    if (!trimmedDescription) {
+      validationErrors.description = "Description is required.";
+    } else if (trimmedDescription.length > 500) {
+      validationErrors.description = "Description must be 500 characters or fewer.";
+    }
+
+    if (formData.amount === "") {
+      validationErrors.amount = "Amount is required.";
+    } else if (!Number.isFinite(amount) || amount <= 0) {
+      validationErrors.amount = "Amount must be greater than 0.";
+    }
+
+    if (!formData.date) {
+      validationErrors.date = "Date is required.";
+    }
+
+    setErrors(validationErrors);
+    return Object.keys(validationErrors).length === 0;
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (!validate()) return;
+
     onSubmit(categoryId, {
-      description: formData.description,
-      amount: parseFloat(formData.amount),
-      date: formData.date
+      description: formData.description.trim(),
+      amount: Number(formData.amount),
+      date: formData.date,
     });
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg sm:text-xl font-semibold mb-4">Add New Expense</h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Description
-            </label>
-            <input
-              type="text"
-              required
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Amount ($)
-            </label>
-            <input
-              type="number"
-              step="0.01"
-              required
-              value={formData.amount}
-              onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-              className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Date
-            </label>
-            <input
-              type="date"
-              required
-              value={formData.date}
-              onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-              className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
-            />
-          </div>
-          <div className="flex flex-col sm:flex-row gap-3 pt-4">
-            <button
-              type="submit"
-              className="w-full sm:flex-1 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
-            >
-              Add Expense
-            </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <ModalFrame onClose={onCancel} titleId="add-expense-title">
+      <h2 id="add-expense-title" className="text-lg sm:text-xl font-semibold mb-4">
+        Add New Expense
+      </h2>
+      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <div>
+          <label htmlFor="expense-description" className="block text-sm font-medium text-gray-700 mb-2">
+            Description
+          </label>
+          <input
+            id="expense-description"
+            type="text"
+            autoFocus
+            maxLength={500}
+            value={formData.description}
+            onChange={(event) => {
+              setFormData({ ...formData, description: event.target.value });
+              if (errors.description) setErrors({ ...errors, description: undefined });
+            }}
+            aria-invalid={Boolean(errors.description)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.description && (
+            <p className="mt-1 text-xs text-red-600">{errors.description}</p>
+          )}
+        </div>
+        <div>
+          <label htmlFor="expense-amount" className="block text-sm font-medium text-gray-700 mb-2">
+            Amount ($)
+          </label>
+          <input
+            id="expense-amount"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={formData.amount}
+            onChange={(event) => {
+              setFormData({ ...formData, amount: event.target.value });
+              if (errors.amount) setErrors({ ...errors, amount: undefined });
+            }}
+            aria-invalid={Boolean(errors.amount)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.amount && <p className="mt-1 text-xs text-red-600">{errors.amount}</p>}
+        </div>
+        <div>
+          <label htmlFor="expense-date" className="block text-sm font-medium text-gray-700 mb-2">
+            Date
+          </label>
+          <input
+            id="expense-date"
+            type="date"
+            value={formData.date}
+            onChange={(event) => {
+              setFormData({ ...formData, date: event.target.value });
+              if (errors.date) setErrors({ ...errors, date: undefined });
+            }}
+            aria-invalid={Boolean(errors.date)}
+            className="w-full px-4 py-3 sm:px-3 sm:py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-sm"
+          />
+          {errors.date && <p className="mt-1 text-xs text-red-600">{errors.date}</p>}
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3 pt-4">
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 disabled:bg-blue-300 text-white py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+          >
+            {isSubmitting ? "Saving..." : "Add Expense"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="w-full sm:flex-1 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 disabled:bg-gray-200 text-gray-700 py-3 sm:py-2 rounded-md font-medium text-base sm:text-sm"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </ModalFrame>
   );
 }
 
@@ -778,69 +1072,75 @@ function WeeklyExpensesModal({ category, expenses, onDeleteExpense, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg sm:text-xl font-semibold text-blue-600">
-            Weekly Expenses - {category.name}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
-            title="Close"
-          >
-            ×
-          </button>
-        </div>
-        
-        <div className="mb-4 p-3 bg-blue-50 rounded-lg">
-          <div className="flex justify-between items-center">
-            <span className="text-blue-700 font-medium">Total Weekly Spending:</span>
-            <span className="text-blue-900 font-bold text-lg">${getTotalAmount().toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between items-center mt-1">
-            <span className="text-blue-600 text-sm">Weekly Budget:</span>
-            <span className="text-blue-800 font-semibold">${category.weekly_budget.toFixed(2)}</span>
-          </div>
-        </div>
+    <ModalFrame onClose={onClose} titleId="weekly-expenses-title" maxWidth="max-w-2xl">
+      <div className="flex justify-between items-center mb-4">
+        <h2 id="weekly-expenses-title" className="text-lg sm:text-xl font-semibold text-blue-600">
+          Weekly Expenses - {category.name}
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+          title="Close"
+          aria-label="Close weekly expenses"
+        >
+          ×
+        </button>
+      </div>
 
-        <div className="space-y-2 max-h-96 overflow-y-auto">
-          {expenses.length === 0 ? (
-            <p className="text-gray-500 text-center py-8">No expenses this week</p>
-          ) : (
-            expenses.map((expense) => (
-              <div key={expense.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                <div className="flex-1 min-w-0 pr-3">
-                  <p className="font-medium text-gray-900 truncate">{expense.description}</p>
-                  <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-lg font-semibold text-gray-900">${expense.amount.toFixed(2)}</span>
-                  <button
-                    onClick={() => onDeleteExpense(category.id, expense)}
-                    className="text-red-500 hover:text-red-700 transition-colors"
-                    title="Delete expense"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
+      <div className="mb-4 p-3 bg-blue-50 rounded-lg">
+        <div className="flex justify-between items-center">
+          <span className="text-blue-700 font-medium">Total Weekly Spending:</span>
+          <span className="text-blue-900 font-bold text-lg">{formatCurrency(getTotalAmount())}</span>
         </div>
-
-        <div className="mt-6 flex justify-end">
-          <button
-            onClick={onClose}
-            className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
-          >
-            Close
-          </button>
+        <div className="flex justify-between items-center mt-1">
+          <span className="text-blue-600 text-sm">Weekly Budget:</span>
+          <span className="text-blue-800 font-semibold">{formatCurrency(category.weekly_budget)}</span>
         </div>
       </div>
-    </div>
+
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {expenses.length === 0 ? (
+          <p className="text-gray-500 text-center py-8">No expenses this week</p>
+        ) : (
+          expenses.map((expense) => (
+            <div
+              key={expense.id}
+              className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <div className="flex-1 min-w-0 pr-3">
+                <p className="font-medium text-gray-900 truncate">{expense.description}</p>
+                <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-lg font-semibold text-gray-900">{formatCurrency(expense.amount)}</span>
+                <button
+                  type="button"
+                  onClick={() => onDeleteExpense(category.id, expense)}
+                  className="text-red-500 hover:text-red-700 transition-colors"
+                  title="Delete expense"
+                  aria-label="Delete expense"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="mt-6 flex justify-end">
+        <button
+          type="button"
+          onClick={onClose}
+          className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
+        >
+          Close
+        </button>
+      </div>
+    </ModalFrame>
   );
 }
 
@@ -849,7 +1149,6 @@ function MonthlyExpensesModal({ category, expenses, onDeleteExpense, onClose }) 
     return expenses.reduce((total, expense) => total + expense.amount, 0);
   };
 
-  // Calculate monthly budget
   const getMonthlyBudget = () => {
     const dailyBudget = category.weekly_budget / 7;
     const now = new Date();
@@ -861,77 +1160,83 @@ function MonthlyExpensesModal({ category, expenses, onDeleteExpense, onClose }) 
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg sm:text-xl font-semibold text-purple-600">
-            Monthly Expenses - {category.name}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
-            title="Close"
-          >
-            ×
-          </button>
-        </div>
-        
-        <div className="mb-4 p-3 bg-purple-50 rounded-lg">
-          <div className="flex justify-between items-center">
-            <span className="text-purple-700 font-medium">Total Monthly Spending:</span>
-            <span className="text-purple-900 font-bold text-lg">${getTotalAmount().toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between items-center mt-1">
-            <span className="text-purple-600 text-sm">Monthly Budget:</span>
-            <span className="text-purple-800 font-semibold">${getMonthlyBudget().toFixed(2)}</span>
-          </div>
-        </div>
+    <ModalFrame onClose={onClose} titleId="monthly-expenses-title" maxWidth="max-w-2xl">
+      <div className="flex justify-between items-center mb-4">
+        <h2 id="monthly-expenses-title" className="text-lg sm:text-xl font-semibold text-purple-600">
+          Monthly Expenses - {category.name}
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+          title="Close"
+          aria-label="Close monthly expenses"
+        >
+          ×
+        </button>
+      </div>
 
-        <div className="space-y-2 max-h-96 overflow-y-auto">
-          {expenses.length === 0 ? (
-            <p className="text-gray-500 text-center py-8">No expenses this month</p>
-          ) : (
-            expenses.map((expense) => (
-              <div key={expense.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                <div className="flex-1 min-w-0 pr-3">
-                  <p className="font-medium text-gray-900 truncate">{expense.description}</p>
-                  <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-lg font-semibold text-gray-900">${expense.amount.toFixed(2)}</span>
-                  <button
-                    onClick={() => onDeleteExpense(category.id, expense)}
-                    className="text-red-500 hover:text-red-700 transition-colors"
-                    title="Delete expense"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
+      <div className="mb-4 p-3 bg-purple-50 rounded-lg">
+        <div className="flex justify-between items-center">
+          <span className="text-purple-700 font-medium">Total Monthly Spending:</span>
+          <span className="text-purple-900 font-bold text-lg">{formatCurrency(getTotalAmount())}</span>
         </div>
-
-        <div className="mt-6 flex justify-end">
-          <button
-            onClick={onClose}
-            className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
-          >
-            Close
-          </button>
+        <div className="flex justify-between items-center mt-1">
+          <span className="text-purple-600 text-sm">Monthly Budget:</span>
+          <span className="text-purple-800 font-semibold">{formatCurrency(getMonthlyBudget())}</span>
         </div>
       </div>
-    </div>
+
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {expenses.length === 0 ? (
+          <p className="text-gray-500 text-center py-8">No expenses this month</p>
+        ) : (
+          expenses.map((expense) => (
+            <div
+              key={expense.id}
+              className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <div className="flex-1 min-w-0 pr-3">
+                <p className="font-medium text-gray-900 truncate">{expense.description}</p>
+                <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-lg font-semibold text-gray-900">{formatCurrency(expense.amount)}</span>
+                <button
+                  type="button"
+                  onClick={() => onDeleteExpense(category.id, expense)}
+                  className="text-red-500 hover:text-red-700 transition-colors"
+                  title="Delete expense"
+                  aria-label="Delete expense"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="mt-6 flex justify-end">
+        <button
+          type="button"
+          onClick={onClose}
+          className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
+        >
+          Close
+        </button>
+      </div>
+    </ModalFrame>
   );
 }
 
 function MonthlyReportModal({ selectedMonth, reportData, onClose }) {
-  const [year, month] = selectedMonth.split('-').map(Number);
-  const monthName = new Date(year, month, 1).toLocaleDateString('en-US', { 
-    month: 'long', 
-    year: 'numeric' 
+  const [year, month] = selectedMonth.split("-").map(Number);
+  const monthName = new Date(year, month, 1).toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
   });
 
   const getTotalSpent = () => {
@@ -943,82 +1248,82 @@ function MonthlyReportModal({ selectedMonth, reportData, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl sm:text-2xl font-bold text-green-600">
-            Monthly Report - {monthName}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
-            title="Close"
-          >
-            ×
-          </button>
-        </div>
-        
-        {/* Summary Section */}
-        <div className="mb-6 p-4 bg-green-50 rounded-lg">
-          <div className="grid grid-cols-3 gap-4">
-            <div className="text-center">
-              <p className="text-green-700 font-medium">Spent</p>
-              <p className="text-green-900 font-bold text-2xl">${getTotalSpent().toFixed(2)}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-green-700 font-medium">Expenses</p>
-              <p className="text-green-900 font-bold text-2xl">{getTotalExpenses()}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-green-700 font-medium">Categories</p>
-              <p className="text-green-900 font-bold text-2xl">{reportData.length}</p>
-            </div>
+    <ModalFrame onClose={onClose} titleId="monthly-report-title" maxWidth="max-w-4xl">
+      <div className="flex justify-between items-center mb-6">
+        <h2 id="monthly-report-title" className="text-xl sm:text-2xl font-bold text-green-600">
+          Monthly Report - {monthName}
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+          title="Close"
+          aria-label="Close monthly report"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="mb-6 p-4 bg-green-50 rounded-lg">
+        <div className="grid grid-cols-3 gap-4">
+          <div className="text-center">
+            <p className="text-green-700 font-medium">Spent</p>
+            <p className="text-green-900 font-bold text-2xl">{formatCurrency(getTotalSpent())}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-green-700 font-medium">Expenses</p>
+            <p className="text-green-900 font-bold text-2xl">{getTotalExpenses()}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-green-700 font-medium">Categories</p>
+            <p className="text-green-900 font-bold text-2xl">{reportData.length}</p>
           </div>
         </div>
+      </div>
 
-        {/* Categories Report */}
-        <div className="space-y-4 max-h-128 overflow-y-auto">
-          {reportData.length === 0 ? (
-            <div className="text-center py-8">
-              <p className="text-gray-500 text-lg">No expenses found for {monthName}</p>
-            </div>
-          ) : (
-            reportData.map((item) => (
-              <div key={item.category.id} className="bg-gray-50 rounded-lg p-4">
-                <div className="flex justify-between items-center mb-3">
-                  <h3 className="text-lg font-semibold text-gray-900">{item.category.name}</h3>
-                  <div className="text-right">
-                    <p className="text-lg font-bold text-gray-900">${item.totalSpent.toFixed(2)}</p>
-                    <p className="text-sm text-gray-600">{item.expenseCount} expense{item.expenseCount !== 1 ? 's' : ''}</p>
-                  </div>
-                </div>
-                
-                {/* Expenses List */}
-                <div className="space-y-2">
-                  {item.expenses.map((expense) => (
-                    <div key={expense.id} className="flex justify-between items-center p-2 bg-white rounded border">
-                      <div className="flex-1 min-w-0 pr-3">
-                        <p className="font-medium text-gray-900 truncate">{expense.description}</p>
-                        <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
-                      </div>
-                      <span className="font-semibold text-gray-900">${expense.amount.toFixed(2)}</span>
-                    </div>
-                  ))}
+      <div className="space-y-4 max-h-128 overflow-y-auto">
+        {reportData.length === 0 ? (
+          <div className="text-center py-8">
+            <p className="text-gray-500 text-lg">No expenses found for {monthName}</p>
+          </div>
+        ) : (
+          reportData.map((item) => (
+            <div key={item.category.id} className="bg-gray-50 rounded-lg p-4">
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="text-lg font-semibold text-gray-900">{item.category.name}</h3>
+                <div className="text-right">
+                  <p className="text-lg font-bold text-gray-900">{formatCurrency(item.totalSpent)}</p>
+                  <p className="text-sm text-gray-600">
+                    {item.expenseCount} expense{item.expenseCount !== 1 ? "s" : ""}
+                  </p>
                 </div>
               </div>
-            ))
-          )}
-        </div>
 
-        <div className="mt-6 flex justify-end">
-          <button
-            onClick={onClose}
-            className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
-          >
-            Close
-          </button>
-        </div>
+              <div className="space-y-2">
+                {item.expenses.map((expense) => (
+                  <div key={expense.id} className="flex justify-between items-center p-2 bg-white rounded border">
+                    <div className="flex-1 min-w-0 pr-3">
+                      <p className="font-medium text-gray-900 truncate">{expense.description}</p>
+                      <p className="text-sm text-gray-600">{new Date(expense.expense_date).toLocaleDateString()}</p>
+                    </div>
+                    <span className="font-semibold text-gray-900">{formatCurrency(expense.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
       </div>
-    </div>
+
+      <div className="mt-6 flex justify-end">
+        <button
+          type="button"
+          onClick={onClose}
+          className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md font-medium"
+        >
+          Close
+        </button>
+      </div>
+    </ModalFrame>
   );
 }
