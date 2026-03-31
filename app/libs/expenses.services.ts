@@ -10,25 +10,35 @@ import { supabase } from "./supabaseClient";
 // Types
 export interface Expense {
   id: number;
-  category_id: number;
+  category_id: number | null;
   description: string;
   amount: number;
   expense_date: string;
+  entry_type: 'variable' | 'recurring';
+  recurring_expense_id: number | null;
+  generated_for_date: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface CreateExpenseData {
-  category_id: number;
+  category_id?: number | null;
   description: string;
   amount: number;
   expense_date: string;
+  entry_type?: 'variable' | 'recurring';
+  recurring_expense_id?: number | null;
+  generated_for_date?: string | null;
 }
 
 export interface UpdateExpenseData {
+  category_id?: number | null;
   description?: string;
   amount?: number;
   expense_date?: string;
+  entry_type?: 'variable' | 'recurring';
+  recurring_expense_id?: number | null;
+  generated_for_date?: string | null;
 }
 
 export interface ExpenseFilters {
@@ -36,6 +46,8 @@ export interface ExpenseFilters {
   start_date?: string;
   end_date?: string;
   search_query?: string;
+  entry_type?: 'variable' | 'recurring' | 'all';
+  recurring_expense_id?: number;
   limit?: number;
   offset?: number;
 }
@@ -69,8 +81,16 @@ export class ExpensesService {
       .select('*');
 
     // Apply filters
-    if (filters.category_id) {
+    if (filters.category_id !== undefined && filters.category_id !== null) {
       query = query.eq('category_id', filters.category_id);
+    }
+
+    if (filters.entry_type && filters.entry_type !== 'all') {
+      query = query.eq('entry_type', filters.entry_type);
+    }
+
+    if (filters.recurring_expense_id !== undefined && filters.recurring_expense_id !== null) {
+      query = query.eq('recurring_expense_id', filters.recurring_expense_id);
     }
 
     if (filters.start_date) {

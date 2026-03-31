@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "@remix-run/react";
 import { CategoriesService } from "../libs/categories.services";
+import { CategorySavingsService } from "../libs/categorySavings.services";
 import { ExpensesService } from "../libs/expenses.services";
+import { RecurringPostingService } from "../libs/recurringPosting.services";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -62,6 +65,12 @@ const hasDuplicateCategoryName = (name, categories = [], excludeId = null) => {
 
 const EXPENSE_PAGE_SIZE = 200;
 const RECENT_EXPENSES_LIMIT = 5;
+const toDateString = (dateValue) => {
+  const year = dateValue.getFullYear();
+  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
+  const day = String(dateValue.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 export default function Index() {
   const [categories, setCategories] = useState([]);
@@ -101,6 +110,7 @@ export default function Index() {
   const [isUpdatingExpense, setIsUpdatingExpense] = useState(false);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
   const [isDeletingExpense, setIsDeletingExpense] = useState(false);
+  const [pendingSavingsCount, setPendingSavingsCount] = useState(0);
   const [expandedRecentExpensesCategoryId, setExpandedRecentExpensesCategoryId] = useState(null);
   const toastTimeoutsRef = useRef(new Map());
   const quickAmountInputRefs = useRef({});
@@ -144,7 +154,7 @@ export default function Index() {
   const getDefaultQuickAddForm = () => ({
     amount: "",
     description: lastQuickDescription,
-    date: new Date().toISOString().split("T")[0],
+    date: toDateString(new Date()),
   });
 
   const getQuickAddForm = (categoryId) =>
@@ -218,6 +228,7 @@ export default function Index() {
     const filters = {
       limit: EXPENSE_PAGE_SIZE,
       offset,
+      entry_type: "variable",
     };
 
     if (debouncedSearchQuery) {
@@ -345,12 +356,14 @@ export default function Index() {
       // Only send the data that the database expects (no id, it's auto-generated)
       const categoryData = {
         name: newCategory.name,
-        weekly_budget: newCategory.weekly_budget
+        weekly_budget: newCategory.weekly_budget,
+        savings_enabled: Boolean(newCategory.savings_enabled),
       };
       
       const createdCategory = await CategoriesService.createCategory(categoryData);
       setCategories((prevCategories) => [...prevCategories, createdCategory]);
       setShowCategoryForm(false);
+      await refreshPendingSavingsCount();
       showToast(`Added ${createdCategory.name}`, "success");
     } catch (error) {
       console.error('Failed to add category:', error);
@@ -371,7 +384,8 @@ export default function Index() {
         category_id: categoryId,
         description: expense.description,
         amount: expense.amount,
-        expense_date: expense.date
+        expense_date: expense.date,
+        entry_type: "variable",
       };
       
       const createdExpense = await ExpensesService.createExpense(expenseData);
@@ -456,7 +470,7 @@ export default function Index() {
       [categoryId]: {
         amount: "",
         description: rememberedDescription,
-        date: new Date().toISOString().split("T")[0],
+        date: toDateString(new Date()),
       },
     }));
     quickAmountInputRefs.current[categoryId]?.focus();
@@ -510,6 +524,7 @@ export default function Index() {
       setShowMonthlyExpenses((isOpen) =>
         selectedCategoryForExpenses?.id === categoryId ? false : isOpen
       );
+      await refreshPendingSavingsCount();
 
       showToast(`Deleted ${categoryName}`, "success", {
         actionLabel: "Undo",
@@ -520,9 +535,11 @@ export default function Index() {
             const restoredCategory = await CategoriesService.createCategory({
               name: categoryToRemove.name,
               weekly_budget: categoryToRemove.weekly_budget,
+              savings_enabled: Boolean(categoryToRemove.savings_enabled),
             });
 
             setCategories((prevCategories) => [...prevCategories, restoredCategory]);
+            await refreshPendingSavingsCount();
 
             if (associatedExpensesSnapshot.length > 0) {
               const restoredExpenses = await ExpensesService.createExpenses(
@@ -586,6 +603,7 @@ export default function Index() {
           ...originalCategory,
           name: updatedCategory.name,
           weekly_budget: updatedCategory.weekly_budget,
+          savings_enabled: Boolean(updatedCategory.savings_enabled),
         }
       : null;
 
@@ -604,6 +622,7 @@ export default function Index() {
       const savedCategory = await CategoriesService.updateCategory(categoryId, {
         name: updatedCategory.name,
         weekly_budget: updatedCategory.weekly_budget,
+        savings_enabled: Boolean(updatedCategory.savings_enabled),
       });
 
       setCategories((prevCategories) =>
@@ -616,6 +635,7 @@ export default function Index() {
       );
       setCategoryToEdit(null);
       setShowEditCategoryForm(false);
+      await refreshPendingSavingsCount();
       showToast(`Updated ${savedCategory.name}`, "success");
       return true;
     } catch (error) {
@@ -896,12 +916,13 @@ export default function Index() {
   const generateMonthlyReport = async (year, month) => {
     const monthStart = new Date(year, month, 1);
     const monthEnd = new Date(year, month + 1, 0);
-    const startDate = monthStart.toISOString().split("T")[0];
-    const endDate = monthEnd.toISOString().split("T")[0];
+    const startDate = toDateString(monthStart);
+    const endDate = toDateString(monthEnd);
 
     const reportFilters = {
       start_date: startDate,
       end_date: endDate,
+      entry_type: "variable",
       limit: 5000,
       offset: 0,
     };
@@ -929,6 +950,15 @@ export default function Index() {
       .filter((item) => item.expenseCount > 0);
   };
 
+  const refreshPendingSavingsCount = async () => {
+    try {
+      const pendingCount = await CategorySavingsService.getPendingRolloversCount();
+      setPendingSavingsCount(pendingCount);
+    } catch (error) {
+      console.error("Failed to refresh pending savings count:", error);
+    }
+  };
+
   useEffect(() => {
     let isActive = true;
 
@@ -942,9 +972,24 @@ export default function Index() {
       setIsLoadingExpenses(true);
       try {
         if (isInitialLoad) {
-          const categoriesData = await CategoriesService.getCategories();
+          try {
+            await RecurringPostingService.runCurrentMonthCatchup();
+          } catch (catchupError) {
+            console.error("Recurring catch-up failed:", catchupError);
+          }
+          try {
+            await CategorySavingsService.runPendingCatchup();
+          } catch (catchupError) {
+            console.error("Savings catch-up failed:", catchupError);
+          }
+
+          const [categoriesData, pendingCount] = await Promise.all([
+            CategoriesService.getCategories(),
+            CategorySavingsService.getPendingRolloversCount(),
+          ]);
           if (!isActive) return;
           setCategories(categoriesData);
+          setPendingSavingsCount(pendingCount);
           hasLoadedInitialDataRef.current = true;
         }
 
@@ -1015,26 +1060,73 @@ export default function Index() {
         <header className="mb-4 sm:mb-6">
           <div className="flex items-center justify-between gap-3">
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Budget Tracker</h1>
-            <button
-              type="button"
-              onClick={() => setShowReportPicker((isOpen) => !isOpen)}
-              className={`shrink-0 p-2 rounded-md border transition-colors ${
-                showReportPicker
-                  ? "bg-blue-50 border-blue-300 text-blue-700"
-                  : "bg-white border-gray-300 text-gray-600 hover:text-gray-800"
-              }`}
-              aria-label="Toggle monthly report options"
-              title="Monthly report"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                />
-              </svg>
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                to="/overview"
+                className="shrink-0 p-2 rounded-md border bg-white border-gray-300 text-gray-600 hover:text-gray-800 transition-colors"
+                aria-label="Open financial overview"
+                title="Financial overview"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M3 13h8V3H3v10zm10 8h8V3h-8v18zm-10 0h8v-6H3v6z"
+                  />
+                </svg>
+              </Link>
+              <Link
+                to="/savings"
+                className="shrink-0 p-2 rounded-md border bg-white border-gray-300 text-gray-600 hover:text-gray-800 transition-colors"
+                aria-label="Open category savings"
+                title="Category savings"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M3 7h18v4H3V7zm0 4h18v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6zm5 3h.01M12 14h6"
+                  />
+                </svg>
+              </Link>
+              <Link
+                to="/notifications"
+                className="shrink-0 p-2 rounded-md border bg-white border-gray-300 text-gray-600 hover:text-gray-800 transition-colors"
+                aria-label="Open notifications"
+                title="Notifications"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15 17h5l-1.405-1.405A2.03 2.03 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0a3 3 0 11-6 0m6 0H9"
+                  />
+                </svg>
+              </Link>
+              <button
+                type="button"
+                onClick={() => setShowReportPicker((isOpen) => !isOpen)}
+                className={`shrink-0 p-2 rounded-md border transition-colors ${
+                  showReportPicker
+                    ? "bg-blue-50 border-blue-300 text-blue-700"
+                    : "bg-white border-gray-300 text-gray-600 hover:text-gray-800"
+                }`}
+                aria-label="Toggle monthly report options"
+                title="Monthly report"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                  />
+                </svg>
+              </button>
+            </div>
           </div>
 
           {showReportPicker && (
@@ -1076,6 +1168,16 @@ export default function Index() {
               className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
             />
           </div>
+
+          {pendingSavingsCount > 0 && (
+            <Link
+              to="/savings"
+              className="mt-2 block rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 hover:bg-amber-100"
+            >
+              {pendingSavingsCount} savings confirmation
+              {pendingSavingsCount === 1 ? "" : "s"} pending
+            </Link>
+          )}
         </header>
 
         {/* Loading State */}
@@ -1726,6 +1828,7 @@ function CategoryForm({ categories, onSubmit, onCancel, isSubmitting }) {
   const [formData, setFormData] = useState({
     name: "",
     weeklyBudget: "",
+    savingsEnabled: false,
   });
   const [errors, setErrors] = useState({});
 
@@ -1759,6 +1862,7 @@ function CategoryForm({ categories, onSubmit, onCancel, isSubmitting }) {
     onSubmit({
       name: formData.name.trim(),
       weekly_budget: Number(formData.weeklyBudget),
+      savings_enabled: Boolean(formData.savingsEnabled),
     });
   };
 
@@ -1810,6 +1914,26 @@ function CategoryForm({ categories, onSubmit, onCancel, isSubmitting }) {
             <p className="mt-1 text-xs text-red-600">{errors.weeklyBudget}</p>
           )}
         </div>
+        <label
+          htmlFor="category-savings-enabled"
+          className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2"
+        >
+          <input
+            id="category-savings-enabled"
+            type="checkbox"
+            checked={formData.savingsEnabled}
+            onChange={(event) =>
+              setFormData((current) => ({
+                ...current,
+                savingsEnabled: event.target.checked,
+              }))
+            }
+            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-700">
+            Enable month-end savings rollover for this category
+          </span>
+        </label>
 
         <div className="flex flex-col sm:flex-row gap-3 pt-4">
           <button
@@ -1837,6 +1961,7 @@ function EditCategoryForm({ category, categories, onSubmit, onCancel, isSubmitti
   const [formData, setFormData] = useState({
     name: category.name || "",
     weeklyBudget: String(category.weekly_budget ?? ""),
+    savingsEnabled: Boolean(category.savings_enabled),
   });
   const [errors, setErrors] = useState({});
 
@@ -1870,6 +1995,7 @@ function EditCategoryForm({ category, categories, onSubmit, onCancel, isSubmitti
     onSubmit({
       name: formData.name.trim(),
       weekly_budget: Number(formData.weeklyBudget),
+      savings_enabled: Boolean(formData.savingsEnabled),
     });
   };
 
@@ -1921,6 +2047,26 @@ function EditCategoryForm({ category, categories, onSubmit, onCancel, isSubmitti
             <p className="mt-1 text-xs text-red-600">{errors.weeklyBudget}</p>
           )}
         </div>
+        <label
+          htmlFor="edit-category-savings-enabled"
+          className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2"
+        >
+          <input
+            id="edit-category-savings-enabled"
+            type="checkbox"
+            checked={formData.savingsEnabled}
+            onChange={(event) =>
+              setFormData((current) => ({
+                ...current,
+                savingsEnabled: event.target.checked,
+              }))
+            }
+            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-700">
+            Enable month-end savings rollover for this category
+          </span>
+        </label>
 
         <div className="flex flex-col sm:flex-row gap-3 pt-4">
           <button

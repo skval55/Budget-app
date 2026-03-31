@@ -6,6 +6,7 @@ export interface Category {
   id: number;
   name: string;
   weekly_budget: number;
+  savings_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -13,11 +14,13 @@ export interface Category {
 export interface CreateCategoryData {
   name: string;
   weekly_budget: number;
+  savings_enabled?: boolean;
 }
 
 export interface UpdateCategoryData {
   name?: string;
   weekly_budget?: number;
+  savings_enabled?: boolean;
 }
 
 export interface CategoryWithStats extends Category {
@@ -35,8 +38,6 @@ export class CategoriesService {
    * Create a new category
    */
   static async createCategory(data: CreateCategoryData): Promise<Category> {
-
-    console.log({data})
     const { data: category, error } = await supabase
       .from('categories')
       .insert([data])
