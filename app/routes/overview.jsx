@@ -5,6 +5,14 @@ import { ExpensesService } from "../libs/expenses.services";
 import { RecurringExpensesService } from "../libs/recurringExpenses.services";
 import { RecurringIncomesService } from "../libs/recurringIncomes.services";
 import { RecurringPostingService } from "../libs/recurringPosting.services";
+import {
+  buildCacheKey,
+  CacheNamespaces,
+  CacheTTL,
+  clearCacheByPrefix,
+  getCachedValue,
+  setCachedValue,
+} from "../libs/clientCache";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -116,6 +124,15 @@ const formatIncomeFrequency = (recurringIncome) => {
   return `monthly (${monthlyDays[0]} & ${monthlyDays[1]})`;
 };
 
+const OVERVIEW_CACHE_KEY_BASE = `${CacheNamespaces.overview}:current-month`;
+const buildOverviewCacheKey = () => {
+  const { startDate, endDate } = getCurrentMonthBounds();
+  return buildCacheKey(OVERVIEW_CACHE_KEY_BASE, {
+    start_date: startDate,
+    end_date: endDate,
+  });
+};
+
 export default function Overview() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -179,12 +196,47 @@ export default function Overview() {
     setStatusMessage({ message, type });
   };
 
-  const loadOverviewData = async ({ withCatchup = false } = {}) => {
-    const setLoadingState = loading ? setLoading : setRefreshing;
-    setLoadingState(true);
+  const applyOverviewSnapshot = (snapshot) => {
+    if (!snapshot || typeof snapshot !== "object") return false;
+    if (!Array.isArray(snapshot.categories)) return false;
+    if (!Array.isArray(snapshot.recurringExpenses)) return false;
+    if (!Array.isArray(snapshot.recurringIncomes)) return false;
+    if (!Array.isArray(snapshot.variableExpensesThisMonth)) return false;
+
+    setCategories(snapshot.categories);
+    setRecurringExpenses(snapshot.recurringExpenses);
+    setRecurringIncomes(snapshot.recurringIncomes);
+    setVariableExpensesThisMonth(snapshot.variableExpensesThisMonth);
+    return true;
+  };
+
+  const loadOverviewData = async ({
+    withCatchup = false,
+    preferCache = false,
+    withRefreshIndicator = false,
+  } = {}) => {
+    const cacheKey = buildOverviewCacheKey();
+    let hydratedFromCache = false;
+
+    if (preferCache) {
+      const cachedSnapshot = getCachedValue(cacheKey);
+      hydratedFromCache = applyOverviewSnapshot(cachedSnapshot);
+      if (hydratedFromCache) {
+        setLoading(false);
+      }
+    }
+
+    if (withRefreshIndicator) {
+      setRefreshing(true);
+    } else if (!hydratedFromCache) {
+      const setLoadingState = loading ? setLoading : setRefreshing;
+      setLoadingState(true);
+    }
+
     try {
       if (withCatchup) {
         await RecurringPostingService.runCurrentMonthCatchup();
+        clearCacheByPrefix(CacheNamespaces.overview);
       }
 
       const { startDate, endDate } = getCurrentMonthBounds();
@@ -206,10 +258,15 @@ export default function Overview() {
         }),
       ]);
 
-      setCategories(categoriesData);
-      setRecurringExpenses(recurringExpensesData);
-      setRecurringIncomes(recurringIncomesData);
-      setVariableExpensesThisMonth(variableExpensesData);
+      const freshSnapshot = {
+        categories: categoriesData,
+        recurringExpenses: recurringExpensesData,
+        recurringIncomes: recurringIncomesData,
+        variableExpensesThisMonth: variableExpensesData,
+      };
+
+      applyOverviewSnapshot(freshSnapshot);
+      setCachedValue(cacheKey, freshSnapshot, CacheTTL.short);
     } catch (error) {
       console.error("Failed to load overview data:", error);
       showStatusMessage(`Failed to load data: ${getErrorMessage(error)}`, "error");
@@ -220,7 +277,7 @@ export default function Overview() {
   };
 
   useEffect(() => {
-    loadOverviewData({ withCatchup: true });
+    loadOverviewData({ withCatchup: true, preferCache: true });
   }, []);
 
   const validateRecurringForm = () => {

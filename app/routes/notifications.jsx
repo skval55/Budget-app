@@ -3,6 +3,13 @@ import { Link } from "@remix-run/react";
 import {
   NotificationsService,
 } from "../libs/notifications.services";
+import {
+  CacheNamespaces,
+  CacheTTL,
+  clearCacheByPrefix,
+  getCachedValue,
+  setCachedValue,
+} from "../libs/clientCache";
 
 const getErrorMessage = (error) =>
   error instanceof Error ? error.message : "Unexpected error";
@@ -63,6 +70,49 @@ const getPushPermission = () => {
   return Notification.permission;
 };
 
+const isIOSDevice = () => {
+  if (typeof navigator === "undefined") return false;
+  return /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+};
+
+const isStandaloneMode = () => {
+  if (typeof window === "undefined") return false;
+  const mediaStandalone =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(display-mode: standalone)").matches;
+  const navigatorStandalone = Boolean(window.navigator?.standalone);
+  return mediaStandalone || navigatorStandalone;
+};
+
+const getPushSupportState = () => {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return { supported: false, reason: "Push support unavailable in this environment." };
+  }
+
+  if (!window.isSecureContext) {
+    return { supported: false, reason: "Push notifications require HTTPS." };
+  }
+
+  const hasCoreApis =
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    typeof Notification !== "undefined";
+
+  if (!hasCoreApis) {
+    return { supported: false, reason: "Push notifications are not supported on this browser." };
+  }
+
+  if (isIOSDevice() && !isStandaloneMode()) {
+    return {
+      supported: false,
+      reason:
+        "On iPhone, add this app to Home Screen and open it from that icon to enable push.",
+    };
+  }
+
+  return { supported: true, reason: null };
+};
+
 const formatDateTime = (dateValue) => {
   if (!dateValue) return "Never";
   const parsed = new Date(dateValue);
@@ -79,6 +129,8 @@ const dayOptions = [
   { value: 5, label: "Friday" },
   { value: 6, label: "Saturday" },
 ];
+
+const NOTIFICATIONS_CACHE_KEY = `${CacheNamespaces.notifications}:settings`;
 
 export default function Notifications() {
   const [loading, setLoading] = useState(true);
@@ -101,10 +153,11 @@ export default function Notifications() {
   const [isTestingSubscriptionId, setIsTestingSubscriptionId] = useState(null);
   const [currentEndpoint, setCurrentEndpoint] = useState(null);
   const [pushPermission, setPushPermission] = useState(getPushPermission());
-  const [isPushSupported, setIsPushSupported] = useState(false);
+  const [pushSupport, setPushSupport] = useState(() => getPushSupportState());
 
   const timezoneOptions = useMemo(() => getTimezoneOptions(), []);
   const hasVapidKey = Boolean((import.meta.env.VITE_PUSH_VAPID_PUBLIC_KEY || "").trim());
+  const isPushSupported = pushSupport.supported;
 
   const showStatusMessage = (message, type = "success") => {
     setStatusMessage({ message, type });
@@ -138,25 +191,77 @@ export default function Notifications() {
     }
   };
 
-  const loadNotificationsData = async ({ withRefreshIndicator = false } = {}) => {
-    if (withRefreshIndicator) setRefreshing(true);
+  const applyNotificationsSnapshot = ({
+    settings,
+    activeSubscriptions,
+    fallbackTimezone,
+  }) => {
+    if (!settings || typeof settings !== "object") return false;
+    if (!Array.isArray(activeSubscriptions)) return false;
+
+    setSettingsId(settings.id);
+    setSettingsForm({
+      nightly_enabled: Boolean(settings.nightly_enabled),
+      nightly_time: toTimeInputValue(settings.nightly_time || "20:00"),
+      weekly_enabled: Boolean(settings.weekly_enabled),
+      weekly_day_of_week: String(settings.weekly_day_of_week ?? 0),
+      weekly_time: toTimeInputValue(settings.weekly_time || "18:00"),
+      timezone: settings.timezone || fallbackTimezone,
+    });
+    setSubscriptions(activeSubscriptions);
+    return true;
+  };
+
+  const persistNotificationsSnapshot = (settings, activeSubscriptions) => {
+    setCachedValue(
+      NOTIFICATIONS_CACHE_KEY,
+      {
+        settings,
+        subscriptions: activeSubscriptions,
+      },
+      CacheTTL.medium
+    );
+  };
+
+  const loadNotificationsData = async ({
+    withRefreshIndicator = false,
+    preferCache = false,
+  } = {}) => {
+    const preferredTimezone = getDeviceTimezone();
+    let hydratedFromCache = false;
+
+    if (preferCache) {
+      const cachedSnapshot = getCachedValue(NOTIFICATIONS_CACHE_KEY);
+      if (cachedSnapshot && typeof cachedSnapshot === "object") {
+        hydratedFromCache = applyNotificationsSnapshot({
+          settings: cachedSnapshot.settings,
+          activeSubscriptions: cachedSnapshot.subscriptions,
+          fallbackTimezone: preferredTimezone,
+        });
+        if (hydratedFromCache) {
+          setLoading(false);
+        }
+      }
+    }
+
+    if (withRefreshIndicator) {
+      setRefreshing(true);
+    } else if (!hydratedFromCache) {
+      setLoading(true);
+    }
+
     try {
-      const preferredTimezone = getDeviceTimezone();
       const [settings, activeSubscriptions] = await Promise.all([
         NotificationsService.getOrCreateSettings(preferredTimezone),
         NotificationsService.getPushSubscriptions(),
       ]);
 
-      setSettingsId(settings.id);
-      setSettingsForm({
-        nightly_enabled: Boolean(settings.nightly_enabled),
-        nightly_time: toTimeInputValue(settings.nightly_time || "20:00"),
-        weekly_enabled: Boolean(settings.weekly_enabled),
-        weekly_day_of_week: String(settings.weekly_day_of_week ?? 0),
-        weekly_time: toTimeInputValue(settings.weekly_time || "18:00"),
-        timezone: settings.timezone || preferredTimezone,
+      applyNotificationsSnapshot({
+        settings,
+        activeSubscriptions,
+        fallbackTimezone: preferredTimezone,
       });
-      setSubscriptions(activeSubscriptions);
+      persistNotificationsSnapshot(settings, activeSubscriptions);
       await refreshCurrentDeviceEndpoint();
     } catch (error) {
       console.error("Failed to load notification data:", error);
@@ -168,13 +273,20 @@ export default function Notifications() {
   };
 
   useEffect(() => {
-    const pushSupported =
-      typeof window !== "undefined" &&
-      "serviceWorker" in navigator &&
-      "PushManager" in window;
-    setIsPushSupported(pushSupported);
+    const refreshPushSupport = () => {
+      setPushSupport(getPushSupportState());
+    };
+
+    refreshPushSupport();
     setPushPermission(getPushPermission());
-    loadNotificationsData();
+    loadNotificationsData({ preferCache: true });
+    window.addEventListener("focus", refreshPushSupport);
+    document.addEventListener("visibilitychange", refreshPushSupport);
+
+    return () => {
+      window.removeEventListener("focus", refreshPushSupport);
+      document.removeEventListener("visibilitychange", refreshPushSupport);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -204,6 +316,7 @@ export default function Notifications() {
         timezone: updatedSettings.timezone,
         weekly_day_of_week: String(updatedSettings.weekly_day_of_week),
       }));
+      persistNotificationsSnapshot(updatedSettings, subscriptions);
 
       showStatusMessage("Notification schedule saved.");
     } catch (error) {
@@ -215,8 +328,13 @@ export default function Notifications() {
   };
 
   const handleEnableOnThisPhone = async () => {
-    if (!isPushSupported) {
-      showStatusMessage("Push notifications are not supported on this browser.", "error");
+    const supportState = getPushSupportState();
+    setPushSupport(supportState);
+    if (!supportState.supported) {
+      showStatusMessage(
+        supportState.reason || "Push notifications are not supported on this browser.",
+        "error"
+      );
       return;
     }
 
@@ -273,6 +391,7 @@ export default function Notifications() {
       });
 
       setCurrentEndpoint(subscriptionJson.endpoint);
+      clearCacheByPrefix(CacheNamespaces.notifications);
       await loadNotificationsData({ withRefreshIndicator: true });
       showStatusMessage("Push notifications enabled on this phone.");
     } catch (error) {
@@ -291,7 +410,12 @@ export default function Notifications() {
     try {
       await NotificationsService.unsubscribeDevice(subscription.id);
 
-      if (subscription.endpoint && subscription.endpoint === currentEndpoint && isPushSupported) {
+      if (
+        subscription.endpoint &&
+        subscription.endpoint === currentEndpoint &&
+        typeof navigator !== "undefined" &&
+        "serviceWorker" in navigator
+      ) {
         const registration = await getServiceWorkerRegistration();
         const browserSubscription = await registration.pushManager.getSubscription();
         if (
@@ -303,6 +427,7 @@ export default function Notifications() {
         setCurrentEndpoint(null);
       }
 
+      clearCacheByPrefix(CacheNamespaces.notifications);
       await loadNotificationsData({ withRefreshIndicator: true });
       showStatusMessage("Device removed from reminders.");
     } catch (error) {
@@ -333,8 +458,8 @@ export default function Notifications() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-3 sm:p-6">
-      <div className="max-w-3xl mx-auto space-y-3 sm:space-y-4">
+    <div className="min-h-screen bg-gray-50 p-3 sm:p-6 overflow-x-hidden">
+      <div className="max-w-3xl mx-auto space-y-3 sm:space-y-4 min-w-0">
         <header className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 sm:p-4">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
@@ -410,7 +535,7 @@ export default function Notifications() {
           </div>
         )}
 
-        <section className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4">
+        <section className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4 overflow-hidden">
           <div className="flex items-center justify-between gap-2 mb-3">
             <h2 className="text-lg font-semibold text-gray-900">Reminder Schedule</h2>
           </div>
@@ -418,8 +543,8 @@ export default function Notifications() {
           {loading ? (
             <p className="text-sm text-gray-600">Loading settings...</p>
           ) : (
-            <form onSubmit={handleSaveSettings} className="space-y-3">
-              <div className="rounded-md border border-gray-200 p-3">
+            <form onSubmit={handleSaveSettings} className="space-y-3 min-w-0">
+              <div className="rounded-md border border-gray-200 p-3 min-w-0 overflow-hidden">
                 <label className="flex items-center justify-between gap-3">
                   <span className="text-sm font-medium text-gray-800">Nightly reminder</span>
                   <input
@@ -446,12 +571,12 @@ export default function Notifications() {
                       }))
                     }
                     disabled={!settingsForm.nightly_enabled}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100"
+                    className="block w-full min-w-0 max-w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100"
                   />
                 </div>
               </div>
 
-              <div className="rounded-md border border-gray-200 p-3">
+              <div className="rounded-md border border-gray-200 p-3 min-w-0 overflow-hidden">
                 <label className="flex items-center justify-between gap-3">
                   <span className="text-sm font-medium text-gray-800">Weekly reminder</span>
                   <input
@@ -466,8 +591,8 @@ export default function Notifications() {
                     className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
                 </label>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <div>
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 min-w-0">
+                  <div className="min-w-0">
                     <label className="text-xs text-gray-600 block mb-1">Weekly day</label>
                     <select
                       value={settingsForm.weekly_day_of_week}
@@ -478,7 +603,7 @@ export default function Notifications() {
                         }))
                       }
                       disabled={!settingsForm.weekly_enabled}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100"
+                      className="block w-full min-w-0 max-w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100"
                     >
                       {dayOptions.map((dayOption) => (
                         <option key={dayOption.value} value={String(dayOption.value)}>
@@ -487,7 +612,7 @@ export default function Notifications() {
                       ))}
                     </select>
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <label className="text-xs text-gray-600 block mb-1">Weekly time</label>
                     <input
                       type="time"
@@ -499,13 +624,13 @@ export default function Notifications() {
                         }))
                       }
                       disabled={!settingsForm.weekly_enabled}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100"
+                      className="block w-full min-w-0 max-w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100"
                     />
                   </div>
                 </div>
               </div>
 
-              <div>
+              <div className="min-w-0">
                 <label className="text-sm font-medium text-gray-800 block mb-1">Timezone</label>
                 <input
                   type="text"
@@ -517,7 +642,7 @@ export default function Notifications() {
                       timezone: event.target.value,
                     }))
                   }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                  className="block w-full min-w-0 max-w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                 />
                 <datalist id="timezone-options">
                   {timezoneOptions.map((timezoneValue) => (
@@ -537,7 +662,7 @@ export default function Notifications() {
           )}
         </section>
 
-        <section className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4">
+        <section className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4 overflow-hidden">
           <h2 className="text-lg font-semibold text-gray-900 mb-2">This Phone</h2>
           <p className="text-sm text-gray-600 mb-3">
             Enable push reminders on this device. Repeat on your wife&apos;s phone.
@@ -551,7 +676,7 @@ export default function Notifications() {
                 maxLength={80}
                 value={deviceLabel}
                 onChange={(event) => setDeviceLabel(event.target.value)}
-                className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                className="mt-1 block w-full min-w-0 max-w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                 placeholder="My iPhone"
               />
             </label>
@@ -562,6 +687,9 @@ export default function Notifications() {
                 {pushPermission === "unsupported" ? "Not supported" : pushPermission}
               </span>
             </div>
+            {!isPushSupported && pushSupport.reason && (
+              <p className="text-xs text-amber-700">{pushSupport.reason}</p>
+            )}
             {!hasVapidKey && (
               <p className="text-xs text-amber-700">
                 Missing `VITE_PUSH_VAPID_PUBLIC_KEY` in app env.
@@ -570,7 +698,7 @@ export default function Notifications() {
             <button
               type="button"
               onClick={handleEnableOnThisPhone}
-              disabled={isEnablingDevice || !isPushSupported || !hasVapidKey}
+              disabled={isEnablingDevice || !hasVapidKey}
               className="w-full sm:w-auto px-4 py-2 rounded-md bg-green-600 text-white text-sm font-medium disabled:bg-green-300"
             >
               {isEnablingDevice ? "Enabling..." : "Enable notifications on this phone"}

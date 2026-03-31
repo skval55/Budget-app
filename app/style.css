@@ -11,3 +11,10 @@ body {
   margin: 0 auto;
   padding: 0 1rem;
 }
+
+/* Prevent iOS form controls from overflowing narrow card layouts. */
+input,
+select,
+textarea {
+  max-width: 100%;
+}

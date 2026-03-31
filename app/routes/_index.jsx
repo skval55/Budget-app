@@ -4,6 +4,15 @@ import { CategoriesService } from "../libs/categories.services";
 import { CategorySavingsService } from "../libs/categorySavings.services";
 import { ExpensesService } from "../libs/expenses.services";
 import { RecurringPostingService } from "../libs/recurringPosting.services";
+import {
+  buildCacheKey,
+  CacheNamespaces,
+  CacheTTL,
+  clearCacheByPrefix,
+  getCachedValue,
+  removeCachedValue,
+  setCachedValue,
+} from "../libs/clientCache";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -63,8 +72,13 @@ const hasDuplicateCategoryName = (name, categories = [], excludeId = null) => {
   });
 };
 
-const EXPENSE_PAGE_SIZE = 200;
+const EXPENSE_PAGE_SIZE = 100;
 const RECENT_EXPENSES_LIMIT = 5;
+const HOME_CATEGORIES_CACHE_KEY = `${CacheNamespaces.home}:categories`;
+const HOME_PENDING_SAVINGS_COUNT_CACHE_KEY = `${CacheNamespaces.home}:pending-savings-count`;
+const HOME_EXPENSES_CACHE_PREFIX = `${CacheNamespaces.home}:expenses`;
+const buildHomeExpensesCacheKey = (filters) =>
+  buildCacheKey(HOME_EXPENSES_CACHE_PREFIX, filters);
 const toDateString = (dateValue) => {
   const year = dateValue.getFullYear();
   const month = String(dateValue.getMonth() + 1).padStart(2, "0");
@@ -312,6 +326,18 @@ export default function Index() {
     return categoryHasMatchingExpenses(category.id);
   };
 
+  const invalidateExpenseRelatedCaches = () => {
+    clearCacheByPrefix(HOME_EXPENSES_CACHE_PREFIX);
+    clearCacheByPrefix(CacheNamespaces.overview);
+    clearCacheByPrefix(CacheNamespaces.savings);
+  };
+
+  const invalidateCategoryRelatedCaches = () => {
+    removeCachedValue(HOME_CATEGORIES_CACHE_KEY);
+    removeCachedValue(HOME_PENDING_SAVINGS_COUNT_CACHE_KEY);
+    invalidateExpenseRelatedCaches();
+  };
+
   const loadExpensesPage = async ({ append = false } = {}) => {
     const targetOffset = append ? expenses.length : 0;
 
@@ -323,14 +349,18 @@ export default function Index() {
     }
 
     try {
-      const expenseData = await ExpensesService.getExpenses(
-        buildExpenseFilters(targetOffset)
-      );
+      const filters = buildExpenseFilters(targetOffset);
+      const expenseData = await ExpensesService.getExpenses(filters);
 
       if (append) {
         setExpenses((prevExpenses) => [...prevExpenses, ...expenseData]);
       } else {
         setExpenses(expenseData);
+        setCachedValue(
+          buildHomeExpensesCacheKey(filters),
+          expenseData,
+          CacheTTL.short
+        );
       }
 
       setHasMoreExpenses(expenseData.length === EXPENSE_PAGE_SIZE);
@@ -363,6 +393,7 @@ export default function Index() {
       const createdCategory = await CategoriesService.createCategory(categoryData);
       setCategories((prevCategories) => [...prevCategories, createdCategory]);
       setShowCategoryForm(false);
+      invalidateCategoryRelatedCaches();
       await refreshPendingSavingsCount();
       showToast(`Added ${createdCategory.name}`, "success");
     } catch (error) {
@@ -393,6 +424,8 @@ export default function Index() {
       if (expenseMatchesCurrentSearch(createdExpense)) {
         setExpenses((prevExpenses) => [...prevExpenses, createdExpense]);
       }
+      invalidateExpenseRelatedCaches();
+      removeCachedValue(HOME_PENDING_SAVINGS_COUNT_CACHE_KEY);
 
       showToast(
         expenseMatchesCurrentSearch(createdExpense)
@@ -524,6 +557,7 @@ export default function Index() {
       setShowMonthlyExpenses((isOpen) =>
         selectedCategoryForExpenses?.id === categoryId ? false : isOpen
       );
+      invalidateCategoryRelatedCaches();
       await refreshPendingSavingsCount();
 
       showToast(`Deleted ${categoryName}`, "success", {
@@ -539,6 +573,7 @@ export default function Index() {
             });
 
             setCategories((prevCategories) => [...prevCategories, restoredCategory]);
+            invalidateCategoryRelatedCaches();
             await refreshPendingSavingsCount();
 
             if (associatedExpensesSnapshot.length > 0) {
@@ -559,6 +594,7 @@ export default function Index() {
                   ...visibleRestoredExpenses,
                 ]);
               }
+              invalidateExpenseRelatedCaches();
             }
 
             showToast(`Restored ${restoredCategory.name}`, "success");
@@ -635,6 +671,7 @@ export default function Index() {
       );
       setCategoryToEdit(null);
       setShowEditCategoryForm(false);
+      invalidateCategoryRelatedCaches();
       await refreshPendingSavingsCount();
       showToast(`Updated ${savedCategory.name}`, "success");
       return true;
@@ -678,6 +715,8 @@ export default function Index() {
       setShowEditExpenseForm((isOpen) =>
         expenseToEdit?.id === expenseId ? false : isOpen
       );
+      invalidateExpenseRelatedCaches();
+      removeCachedValue(HOME_PENDING_SAVINGS_COUNT_CACHE_KEY);
       showToast("Expense deleted", "success", {
         actionLabel: "Undo",
         duration: 7000,
@@ -697,6 +736,8 @@ export default function Index() {
             } else {
               showToast("Expense restored (hidden by current search)", "success");
             }
+            invalidateExpenseRelatedCaches();
+            removeCachedValue(HOME_PENDING_SAVINGS_COUNT_CACHE_KEY);
           } catch (error) {
             console.error("Failed to restore expense:", error);
             showToast(
@@ -766,6 +807,8 @@ export default function Index() {
       });
       setExpenseToEdit(null);
       setShowEditExpenseForm(false);
+      invalidateExpenseRelatedCaches();
+      removeCachedValue(HOME_PENDING_SAVINGS_COUNT_CACHE_KEY);
       showToast(
         expenseMatchesCurrentSearch(savedExpense)
           ? "Expense updated"
@@ -954,6 +997,11 @@ export default function Index() {
     try {
       const pendingCount = await CategorySavingsService.getPendingRolloversCount();
       setPendingSavingsCount(pendingCount);
+      setCachedValue(
+        HOME_PENDING_SAVINGS_COUNT_CACHE_KEY,
+        pendingCount,
+        CacheTTL.short
+      );
     } catch (error) {
       console.error("Failed to refresh pending savings count:", error);
     }
@@ -964,12 +1012,34 @@ export default function Index() {
 
     const loadData = async () => {
       const isInitialLoad = !hasLoadedInitialDataRef.current;
+      const expenseFilters = buildExpenseFilters(0);
+      const expenseCacheKey = buildHomeExpensesCacheKey(expenseFilters);
 
       if (isInitialLoad) {
-        setLoading(true);
+        const cachedCategories = getCachedValue(HOME_CATEGORIES_CACHE_KEY);
+        const cachedPendingCount = getCachedValue(
+          HOME_PENDING_SAVINGS_COUNT_CACHE_KEY
+        );
+        if (Array.isArray(cachedCategories)) {
+          setCategories(cachedCategories);
+          setLoading(false);
+        } else {
+          setLoading(true);
+        }
+        if (typeof cachedPendingCount === "number") {
+          setPendingSavingsCount(cachedPendingCount);
+        }
       }
 
-      setIsLoadingExpenses(true);
+      const cachedExpenses = getCachedValue(expenseCacheKey);
+      if (Array.isArray(cachedExpenses)) {
+        setExpenses(cachedExpenses);
+        setHasMoreExpenses(cachedExpenses.length === EXPENSE_PAGE_SIZE);
+        setIsLoadingExpenses(false);
+      } else {
+        setIsLoadingExpenses(true);
+      }
+
       try {
         if (isInitialLoad) {
           try {
@@ -990,16 +1060,21 @@ export default function Index() {
           if (!isActive) return;
           setCategories(categoriesData);
           setPendingSavingsCount(pendingCount);
+          setCachedValue(HOME_CATEGORIES_CACHE_KEY, categoriesData, CacheTTL.long);
+          setCachedValue(
+            HOME_PENDING_SAVINGS_COUNT_CACHE_KEY,
+            pendingCount,
+            CacheTTL.short
+          );
           hasLoadedInitialDataRef.current = true;
         }
 
-        const filteredExpenses = await ExpensesService.getExpenses(
-          buildExpenseFilters(0)
-        );
+        const filteredExpenses = await ExpensesService.getExpenses(expenseFilters);
         if (!isActive) return;
 
         setExpenses(filteredExpenses);
         setHasMoreExpenses(filteredExpenses.length === EXPENSE_PAGE_SIZE);
+        setCachedValue(expenseCacheKey, filteredExpenses, CacheTTL.short);
       } catch (error) {
         if (!isActive) return;
         console.error("Failed to load data:", error);

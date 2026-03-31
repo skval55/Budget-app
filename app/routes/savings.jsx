@@ -2,6 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@remix-run/react";
 import { CategorySavingsService } from "../libs/categorySavings.services";
 import { ExpensesService } from "../libs/expenses.services";
+import {
+  buildCacheKey,
+  CacheNamespaces,
+  CacheTTL,
+  clearCacheByPrefix,
+  getCachedValue,
+  removeCachedValue,
+  setCachedValue,
+} from "../libs/clientCache";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -93,6 +102,9 @@ const getCorrectionFormErrors = (rollover, form) => {
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const SAVINGS_CACHE_KEY_BASE = `${CacheNamespaces.savings}:dashboard`;
+const HOME_EXPENSES_CACHE_PREFIX = `${CacheNamespaces.home}:expenses`;
+const HOME_PENDING_SAVINGS_COUNT_CACHE_KEY = `${CacheNamespaces.home}:pending-savings-count`;
 
 function ModalFrame({
   children,
@@ -337,12 +349,52 @@ export default function Savings() {
     );
   }, [pendingRollovers]);
 
-  const loadSavingsData = async ({ withCatchup = false } = {}) => {
-    const setLoadingState = loading ? setLoading : setRefreshing;
-    setLoadingState(true);
+  const invalidateSavingsRelatedCaches = () => {
+    clearCacheByPrefix(CacheNamespaces.savings);
+    clearCacheByPrefix(CacheNamespaces.overview);
+    clearCacheByPrefix(HOME_EXPENSES_CACHE_PREFIX);
+    removeCachedValue(HOME_PENDING_SAVINGS_COUNT_CACHE_KEY);
+  };
+
+  const applySavingsSnapshot = (snapshot) => {
+    if (!snapshot || typeof snapshot !== "object") return false;
+    if (!Array.isArray(snapshot.balances)) return false;
+    if (!Array.isArray(snapshot.pendingRollovers)) return false;
+    if (!Array.isArray(snapshot.confirmedRollovers)) return false;
+
+    setBalances(snapshot.balances);
+    setPendingRollovers(snapshot.pendingRollovers);
+    setConfirmedRollovers(snapshot.confirmedRollovers);
+    return true;
+  };
+
+  const loadSavingsData = async ({
+    withCatchup = false,
+    preferCache = false,
+    withRefreshIndicator = false,
+  } = {}) => {
+    const cacheKey = buildCacheKey(SAVINGS_CACHE_KEY_BASE, { history_limit: 60 });
+    let hydratedFromCache = false;
+
+    if (preferCache) {
+      const cachedSnapshot = getCachedValue(cacheKey);
+      hydratedFromCache = applySavingsSnapshot(cachedSnapshot);
+      if (hydratedFromCache) {
+        setLoading(false);
+      }
+    }
+
+    if (withRefreshIndicator) {
+      setRefreshing(true);
+    } else if (!hydratedFromCache) {
+      const setLoadingState = loading ? setLoading : setRefreshing;
+      setLoadingState(true);
+    }
+
     try {
       if (withCatchup) {
         await CategorySavingsService.runPendingCatchup();
+        clearCacheByPrefix(CacheNamespaces.savings);
       }
 
       const [balanceData, pendingData, confirmedData] = await Promise.all([
@@ -351,9 +403,14 @@ export default function Savings() {
         CategorySavingsService.getConfirmedRollovers(60),
       ]);
 
-      setBalances(balanceData);
-      setPendingRollovers(pendingData);
-      setConfirmedRollovers(confirmedData);
+      const freshSnapshot = {
+        balances: balanceData,
+        pendingRollovers: pendingData,
+        confirmedRollovers: confirmedData,
+      };
+
+      applySavingsSnapshot(freshSnapshot);
+      setCachedValue(cacheKey, freshSnapshot, CacheTTL.short);
     } catch (error) {
       console.error("Failed to load savings data:", error);
       showStatusMessage(`Failed to load savings data: ${getErrorMessage(error)}`, "error");
@@ -364,7 +421,7 @@ export default function Savings() {
   };
 
   useEffect(() => {
-    loadSavingsData({ withCatchup: true });
+    loadSavingsData({ withCatchup: true, preferCache: true });
   }, []);
 
   useEffect(() => {
@@ -468,6 +525,7 @@ export default function Savings() {
         [rollover.id]: {},
       }));
 
+      invalidateSavingsRelatedCaches();
       await loadSavingsData({ withCatchup: true });
       await openCorrectionsForRollover(rollover, { forceReload: true });
     } catch (error) {
@@ -489,6 +547,7 @@ export default function Savings() {
     try {
       await ExpensesService.deleteExpense(expense.id);
       showStatusMessage("Expense deleted.");
+      invalidateSavingsRelatedCaches();
       await loadSavingsData({ withCatchup: true });
       await openCorrectionsForRollover(rollover, { forceReload: true });
     } catch (error) {
@@ -509,6 +568,7 @@ export default function Savings() {
           rollover.month_start
         )}.`
       );
+      invalidateSavingsRelatedCaches();
       await loadSavingsData({ withCatchup: true });
     } catch (error) {
       console.error("Failed to confirm rollover:", error);
@@ -531,6 +591,7 @@ export default function Savings() {
     try {
       await CategorySavingsService.skipPendingRollover(rollover.id);
       showStatusMessage(`Deleted pending rollover for ${categoryName} (${monthLabel}).`);
+      invalidateSavingsRelatedCaches();
       await loadSavingsData({ withCatchup: true });
     } catch (error) {
       console.error("Failed to delete pending rollover:", error);
@@ -556,6 +617,7 @@ export default function Savings() {
       });
       setEditingExpenseContext(null);
       showStatusMessage("Expense updated.");
+      invalidateSavingsRelatedCaches();
       await loadSavingsData({ withCatchup: true });
       await openCorrectionsForRollover(rollover, { forceReload: true });
     } catch (error) {
@@ -567,7 +629,7 @@ export default function Savings() {
   };
 
   const handleRefresh = async () => {
-    await loadSavingsData({ withCatchup: true });
+    await loadSavingsData({ withCatchup: true, withRefreshIndicator: true });
   };
 
   return (
