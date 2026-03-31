@@ -4,8 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "ensure:favicon": "mkdir -p build/client && cp -f public/favicon.svg build/client/favicon.svg",
     "build": "remix vite:build",
-    "dev": "remix vite:dev",
+    "dev": "npm run ensure:favicon && remix vite:dev",
     "start": "remix-serve ./build/server/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
