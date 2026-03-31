@@ -16,6 +16,7 @@ CREATE TABLE categories (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     weekly_budget DECIMAL(10, 2) NOT NULL CHECK (weekly_budget >= 0),
+    savings_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     
@@ -97,6 +98,35 @@ CREATE TABLE IF NOT EXISTS recurring_incomes (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS category_savings_rollovers (
+    id SERIAL PRIMARY KEY,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    month_start DATE NOT NULL,
+    month_end DATE NOT NULL,
+    budget_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    spent_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    rollover_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'skipped')),
+    confirmed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(category_id, month_start)
+);
+
+CREATE TABLE IF NOT EXISTS category_savings_transactions (
+    id SERIAL PRIMARY KEY,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    month_start DATE NOT NULL,
+    amount DECIMAL(12, 2) NOT NULL,
+    source VARCHAR(30) NOT NULL DEFAULT 'monthly_rollover' CHECK (source IN ('monthly_rollover')),
+    rollover_id INTEGER REFERENCES category_savings_rollovers(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE categories
+    ADD COLUMN IF NOT EXISTS savings_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+
 ALTER TABLE expenses
     ADD COLUMN IF NOT EXISTS entry_type VARCHAR(20) NOT NULL DEFAULT 'variable';
 
@@ -155,17 +185,36 @@ BEGIN
             ADD CONSTRAINT expenses_entry_type_check
             CHECK (entry_type IN ('variable', 'recurring'));
     END IF;
+
+    ALTER TABLE category_savings_rollovers
+        DROP CONSTRAINT IF EXISTS category_savings_rollovers_status_check;
+
+    ALTER TABLE category_savings_rollovers
+        ADD CONSTRAINT category_savings_rollovers_status_check
+        CHECK (status IN ('pending', 'confirmed', 'skipped'));
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_recurring_expenses_status ON recurring_expenses(status);
 CREATE INDEX IF NOT EXISTS idx_recurring_expenses_category_id ON recurring_expenses(category_id);
 CREATE INDEX IF NOT EXISTS idx_recurring_incomes_status ON recurring_incomes(status);
+CREATE INDEX IF NOT EXISTS idx_category_savings_rollovers_category_month
+    ON category_savings_rollovers(category_id, month_start);
+CREATE INDEX IF NOT EXISTS idx_category_savings_rollovers_status_month
+    ON category_savings_rollovers(status, month_start);
+CREATE INDEX IF NOT EXISTS idx_category_savings_transactions_category_month
+    ON category_savings_transactions(category_id, month_start);
 CREATE INDEX IF NOT EXISTS idx_expenses_entry_type ON expenses(entry_type);
 CREATE INDEX IF NOT EXISTS idx_expenses_recurring_expense_id ON expenses(recurring_expense_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_recurring_generated_unique
     ON expenses(recurring_expense_id, generated_for_date)
     WHERE recurring_expense_id IS NOT NULL AND generated_for_date IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_category_savings_rollovers_unique
+    ON category_savings_rollovers(category_id, month_start);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_category_savings_transactions_monthly_unique
+    ON category_savings_transactions(category_id, month_start, source);
 
 DO $$
 BEGIN
@@ -186,6 +235,26 @@ BEGIN
     ) THEN
         CREATE TRIGGER update_recurring_incomes_updated_at
             BEFORE UPDATE ON recurring_incomes
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'update_category_savings_rollovers_updated_at'
+    ) THEN
+        CREATE TRIGGER update_category_savings_rollovers_updated_at
+            BEFORE UPDATE ON category_savings_rollovers
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'update_category_savings_transactions_updated_at'
+    ) THEN
+        CREATE TRIGGER update_category_savings_transactions_updated_at
+            BEFORE UPDATE ON category_savings_transactions
             FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
     END IF;
 END $$;

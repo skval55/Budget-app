@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "@remix-run/react";
 import { CategoriesService } from "../libs/categories.services";
+import { CategorySavingsService } from "../libs/categorySavings.services";
 import { ExpensesService } from "../libs/expenses.services";
 import { RecurringPostingService } from "../libs/recurringPosting.services";
 
@@ -64,6 +65,12 @@ const hasDuplicateCategoryName = (name, categories = [], excludeId = null) => {
 
 const EXPENSE_PAGE_SIZE = 200;
 const RECENT_EXPENSES_LIMIT = 5;
+const toDateString = (dateValue) => {
+  const year = dateValue.getFullYear();
+  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
+  const day = String(dateValue.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 export default function Index() {
   const [categories, setCategories] = useState([]);
@@ -103,6 +110,7 @@ export default function Index() {
   const [isUpdatingExpense, setIsUpdatingExpense] = useState(false);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
   const [isDeletingExpense, setIsDeletingExpense] = useState(false);
+  const [pendingSavingsCount, setPendingSavingsCount] = useState(0);
   const [expandedRecentExpensesCategoryId, setExpandedRecentExpensesCategoryId] = useState(null);
   const toastTimeoutsRef = useRef(new Map());
   const quickAmountInputRefs = useRef({});
@@ -146,7 +154,7 @@ export default function Index() {
   const getDefaultQuickAddForm = () => ({
     amount: "",
     description: lastQuickDescription,
-    date: new Date().toISOString().split("T")[0],
+    date: toDateString(new Date()),
   });
 
   const getQuickAddForm = (categoryId) =>
@@ -348,12 +356,14 @@ export default function Index() {
       // Only send the data that the database expects (no id, it's auto-generated)
       const categoryData = {
         name: newCategory.name,
-        weekly_budget: newCategory.weekly_budget
+        weekly_budget: newCategory.weekly_budget,
+        savings_enabled: Boolean(newCategory.savings_enabled),
       };
       
       const createdCategory = await CategoriesService.createCategory(categoryData);
       setCategories((prevCategories) => [...prevCategories, createdCategory]);
       setShowCategoryForm(false);
+      await refreshPendingSavingsCount();
       showToast(`Added ${createdCategory.name}`, "success");
     } catch (error) {
       console.error('Failed to add category:', error);
@@ -460,7 +470,7 @@ export default function Index() {
       [categoryId]: {
         amount: "",
         description: rememberedDescription,
-        date: new Date().toISOString().split("T")[0],
+        date: toDateString(new Date()),
       },
     }));
     quickAmountInputRefs.current[categoryId]?.focus();
@@ -514,6 +524,7 @@ export default function Index() {
       setShowMonthlyExpenses((isOpen) =>
         selectedCategoryForExpenses?.id === categoryId ? false : isOpen
       );
+      await refreshPendingSavingsCount();
 
       showToast(`Deleted ${categoryName}`, "success", {
         actionLabel: "Undo",
@@ -524,9 +535,11 @@ export default function Index() {
             const restoredCategory = await CategoriesService.createCategory({
               name: categoryToRemove.name,
               weekly_budget: categoryToRemove.weekly_budget,
+              savings_enabled: Boolean(categoryToRemove.savings_enabled),
             });
 
             setCategories((prevCategories) => [...prevCategories, restoredCategory]);
+            await refreshPendingSavingsCount();
 
             if (associatedExpensesSnapshot.length > 0) {
               const restoredExpenses = await ExpensesService.createExpenses(
@@ -590,6 +603,7 @@ export default function Index() {
           ...originalCategory,
           name: updatedCategory.name,
           weekly_budget: updatedCategory.weekly_budget,
+          savings_enabled: Boolean(updatedCategory.savings_enabled),
         }
       : null;
 
@@ -608,6 +622,7 @@ export default function Index() {
       const savedCategory = await CategoriesService.updateCategory(categoryId, {
         name: updatedCategory.name,
         weekly_budget: updatedCategory.weekly_budget,
+        savings_enabled: Boolean(updatedCategory.savings_enabled),
       });
 
       setCategories((prevCategories) =>
@@ -620,6 +635,7 @@ export default function Index() {
       );
       setCategoryToEdit(null);
       setShowEditCategoryForm(false);
+      await refreshPendingSavingsCount();
       showToast(`Updated ${savedCategory.name}`, "success");
       return true;
     } catch (error) {
@@ -900,8 +916,8 @@ export default function Index() {
   const generateMonthlyReport = async (year, month) => {
     const monthStart = new Date(year, month, 1);
     const monthEnd = new Date(year, month + 1, 0);
-    const startDate = monthStart.toISOString().split("T")[0];
-    const endDate = monthEnd.toISOString().split("T")[0];
+    const startDate = toDateString(monthStart);
+    const endDate = toDateString(monthEnd);
 
     const reportFilters = {
       start_date: startDate,
@@ -934,6 +950,15 @@ export default function Index() {
       .filter((item) => item.expenseCount > 0);
   };
 
+  const refreshPendingSavingsCount = async () => {
+    try {
+      const pendingCount = await CategorySavingsService.getPendingRolloversCount();
+      setPendingSavingsCount(pendingCount);
+    } catch (error) {
+      console.error("Failed to refresh pending savings count:", error);
+    }
+  };
+
   useEffect(() => {
     let isActive = true;
 
@@ -952,9 +977,19 @@ export default function Index() {
           } catch (catchupError) {
             console.error("Recurring catch-up failed:", catchupError);
           }
-          const categoriesData = await CategoriesService.getCategories();
+          try {
+            await CategorySavingsService.runPendingCatchup();
+          } catch (catchupError) {
+            console.error("Savings catch-up failed:", catchupError);
+          }
+
+          const [categoriesData, pendingCount] = await Promise.all([
+            CategoriesService.getCategories(),
+            CategorySavingsService.getPendingRolloversCount(),
+          ]);
           if (!isActive) return;
           setCategories(categoriesData);
+          setPendingSavingsCount(pendingCount);
           hasLoadedInitialDataRef.current = true;
         }
 
@@ -1041,6 +1076,21 @@ export default function Index() {
                   />
                 </svg>
               </Link>
+              <Link
+                to="/savings"
+                className="shrink-0 p-2 rounded-md border bg-white border-gray-300 text-gray-600 hover:text-gray-800 transition-colors"
+                aria-label="Open category savings"
+                title="Category savings"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M3 7h18v4H3V7zm0 4h18v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6zm5 3h.01M12 14h6"
+                  />
+                </svg>
+              </Link>
               <button
                 type="button"
                 onClick={() => setShowReportPicker((isOpen) => !isOpen)}
@@ -1103,6 +1153,16 @@ export default function Index() {
               className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
             />
           </div>
+
+          {pendingSavingsCount > 0 && (
+            <Link
+              to="/savings"
+              className="mt-2 block rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 hover:bg-amber-100"
+            >
+              {pendingSavingsCount} savings confirmation
+              {pendingSavingsCount === 1 ? "" : "s"} pending
+            </Link>
+          )}
         </header>
 
         {/* Loading State */}
@@ -1753,6 +1813,7 @@ function CategoryForm({ categories, onSubmit, onCancel, isSubmitting }) {
   const [formData, setFormData] = useState({
     name: "",
     weeklyBudget: "",
+    savingsEnabled: false,
   });
   const [errors, setErrors] = useState({});
 
@@ -1786,6 +1847,7 @@ function CategoryForm({ categories, onSubmit, onCancel, isSubmitting }) {
     onSubmit({
       name: formData.name.trim(),
       weekly_budget: Number(formData.weeklyBudget),
+      savings_enabled: Boolean(formData.savingsEnabled),
     });
   };
 
@@ -1837,6 +1899,26 @@ function CategoryForm({ categories, onSubmit, onCancel, isSubmitting }) {
             <p className="mt-1 text-xs text-red-600">{errors.weeklyBudget}</p>
           )}
         </div>
+        <label
+          htmlFor="category-savings-enabled"
+          className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2"
+        >
+          <input
+            id="category-savings-enabled"
+            type="checkbox"
+            checked={formData.savingsEnabled}
+            onChange={(event) =>
+              setFormData((current) => ({
+                ...current,
+                savingsEnabled: event.target.checked,
+              }))
+            }
+            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-700">
+            Enable month-end savings rollover for this category
+          </span>
+        </label>
 
         <div className="flex flex-col sm:flex-row gap-3 pt-4">
           <button
@@ -1864,6 +1946,7 @@ function EditCategoryForm({ category, categories, onSubmit, onCancel, isSubmitti
   const [formData, setFormData] = useState({
     name: category.name || "",
     weeklyBudget: String(category.weekly_budget ?? ""),
+    savingsEnabled: Boolean(category.savings_enabled),
   });
   const [errors, setErrors] = useState({});
 
@@ -1897,6 +1980,7 @@ function EditCategoryForm({ category, categories, onSubmit, onCancel, isSubmitti
     onSubmit({
       name: formData.name.trim(),
       weekly_budget: Number(formData.weeklyBudget),
+      savings_enabled: Boolean(formData.savingsEnabled),
     });
   };
 
@@ -1948,6 +2032,26 @@ function EditCategoryForm({ category, categories, onSubmit, onCancel, isSubmitti
             <p className="mt-1 text-xs text-red-600">{errors.weeklyBudget}</p>
           )}
         </div>
+        <label
+          htmlFor="edit-category-savings-enabled"
+          className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2"
+        >
+          <input
+            id="edit-category-savings-enabled"
+            type="checkbox"
+            checked={formData.savingsEnabled}
+            onChange={(event) =>
+              setFormData((current) => ({
+                ...current,
+                savingsEnabled: event.target.checked,
+              }))
+            }
+            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-700">
+            Enable month-end savings rollover for this category
+          </span>
+        </label>
 
         <div className="flex flex-col sm:flex-row gap-3 pt-4">
           <button

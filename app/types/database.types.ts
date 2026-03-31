@@ -32,6 +32,7 @@ export interface Database {
           user_id: number;
           name: string;
           weekly_budget: number;
+          savings_enabled: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -40,6 +41,7 @@ export interface Database {
           user_id: number;
           name: string;
           weekly_budget: number;
+          savings_enabled?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -48,6 +50,7 @@ export interface Database {
           user_id?: number;
           name?: string;
           weekly_budget?: number;
+          savings_enabled?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -190,6 +193,79 @@ export interface Database {
           updated_at?: string;
         };
       };
+      category_savings_rollovers: {
+        Row: {
+          id: number;
+          category_id: number;
+          month_start: string;
+          month_end: string;
+          budget_amount: number;
+          spent_amount: number;
+          rollover_amount: number;
+          status: "pending" | "confirmed" | "skipped";
+          confirmed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          category_id: number;
+          month_start: string;
+          month_end: string;
+          budget_amount?: number;
+          spent_amount?: number;
+          rollover_amount?: number;
+          status?: "pending" | "confirmed" | "skipped";
+          confirmed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          category_id?: number;
+          month_start?: string;
+          month_end?: string;
+          budget_amount?: number;
+          spent_amount?: number;
+          rollover_amount?: number;
+          status?: "pending" | "confirmed" | "skipped";
+          confirmed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      category_savings_transactions: {
+        Row: {
+          id: number;
+          category_id: number;
+          month_start: string;
+          amount: number;
+          source: "monthly_rollover";
+          rollover_id: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          category_id: number;
+          month_start: string;
+          amount: number;
+          source?: "monthly_rollover";
+          rollover_id?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          category_id?: number;
+          month_start?: string;
+          amount?: number;
+          source?: "monthly_rollover";
+          rollover_id?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
     };
     Views: {
       [_ in never]: never;
@@ -209,15 +285,26 @@ export type Category = Database['public']['Tables']['categories']['Row'];
 export type Expense = Database['public']['Tables']['expenses']['Row'];
 export type RecurringExpense = Database['public']['Tables']['recurring_expenses']['Row'];
 export type RecurringIncome = Database['public']['Tables']['recurring_incomes']['Row'];
+export type CategorySavingsRollover = Database['public']['Tables']['category_savings_rollovers']['Row'];
+export type CategorySavingsTransaction =
+  Database['public']['Tables']['category_savings_transactions']['Row'];
 
 export type CreateUser = Database['public']['Tables']['users']['Insert'];
 export type CreateCategory = Database['public']['Tables']['categories']['Insert'];
 export type CreateExpense = Database['public']['Tables']['expenses']['Insert'];
 export type CreateRecurringExpense = Database['public']['Tables']['recurring_expenses']['Insert'];
 export type CreateRecurringIncome = Database['public']['Tables']['recurring_incomes']['Insert'];
+export type CreateCategorySavingsRollover =
+  Database['public']['Tables']['category_savings_rollovers']['Insert'];
+export type CreateCategorySavingsTransaction =
+  Database['public']['Tables']['category_savings_transactions']['Insert'];
 
 export type UpdateUser = Database['public']['Tables']['users']['Update'];
 export type UpdateCategory = Database['public']['Tables']['categories']['Update'];
 export type UpdateExpense = Database['public']['Tables']['expenses']['Update'];
 export type UpdateRecurringExpense = Database['public']['Tables']['recurring_expenses']['Update'];
 export type UpdateRecurringIncome = Database['public']['Tables']['recurring_incomes']['Update'];
+export type UpdateCategorySavingsRollover =
+  Database['public']['Tables']['category_savings_rollovers']['Update'];
+export type UpdateCategorySavingsTransaction =
+  Database['public']['Tables']['category_savings_transactions']['Update'];
